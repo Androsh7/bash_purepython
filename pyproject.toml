@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bash_purepython"
+version = "0.1.0"
+description = "PurePython implementations of common bash utilities"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "pytest",
+    "ruff",
+    "twine",
+]
+
+[project.scripts]
+ls = "bash_python_utils.ls:main"
+touch = "bash_python_utils.touch:main"
+cat = "bash_python_utils.cat:main"
+cp = "bash_python_utils.cp:main"
+mv = "bash_python_utils.mv:main"
+rm = "bash_python_utils.rm:main"
+mkdir = "bash_python_utils.mkdir:main"
+rmdir = "bash_python_utils.rmdir:main"
+pwd = "bash_python_utils.pwd:main"
+echo = "bash_python_utils.echo:main"
+head = "bash_python_utils.head:main"
+tail = "bash_python_utils.tail:main"
+wc = "bash_python_utils.wc:main"
+grep = "bash_python_utils.grep:main"
+sort = "bash_python_utils.sort:main"
+uniq = "bash_python_utils.uniq:main"
+tr = "bash_python_utils.tr:main"
+cut = "bash_python_utils.cut:main"
+tee = "bash_python_utils.tee:main"
+rev = "bash_python_utils.rev:main"
+nl = "bash_python_utils.nl:main"
+basename = "bash_python_utils.basename:main"
+dirname = "bash_python_utils.dirname:main"
+realpath = "bash_python_utils.realpath:main"
+which = "bash_python_utils.which:main"
+whoami = "bash_python_utils.whoami:main"
+date = "bash_python_utils.date:main"
+env = "bash_python_utils.env:main"
+true = "bash_python_utils.true:main"
+false = "bash_python_utils.false:main"
+yes = "bash_python_utils.yes:main"
+sleep = "bash_python_utils.sleep:main"
+seq = "bash_python_utils.seq:main"
+tar = "bash_python_utils.tar:main"
+gzip = "bash_python_utils.gzip:main"
+gunzip = "bash_python_utils.gunzip:main"
+unzip = "bash_python_utils.unzip:main"
+zip = "bash_python_utils.zip:main"
+help = "bash_python_utils.help:main"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+select = [
+    "E", # Pycodestyle errors
+    "F", # Pyflakes
+    "I", # Isort
+    "PL", # Pylint
+    "UP", # Pyupgrade
+]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bash_python_utils*"]
