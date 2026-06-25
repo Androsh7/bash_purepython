@@ -5,7 +5,7 @@ import sys
 from argparse import ArgumentParser
 
 # Project libraries
-from bash_python_utils._io import read_text
+from bash_purepython._io import read_text
 
 
 def main():

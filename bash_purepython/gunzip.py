@@ -4,7 +4,7 @@
 import sys
 
 # Project libraries
-from bash_python_utils.gzip import main as gzip_main
+from bash_purepython.gzip import main as gzip_main
 
 
 def main():

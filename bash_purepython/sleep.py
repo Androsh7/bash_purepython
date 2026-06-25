@@ -5,7 +5,7 @@ import time
 from argparse import ArgumentParser
 
 # Project libraries
-from bash_python_utils._color import print_error
+from bash_purepython._color import print_error
 
 SUFFIXES = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
