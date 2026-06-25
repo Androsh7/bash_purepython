@@ -6,12 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "bash_purepython"
 version = "0.1.0"
 description = "PurePython implementations of common bash utilities"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
 dev = [
     "build",
+    "pytest",
     "ruff",
     "twine",
 ]
