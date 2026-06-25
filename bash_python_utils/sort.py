@@ -6,7 +6,7 @@ from argparse import ArgumentParser
 
 # Project libraries
 from bash_python_utils._io import read_text
-from bash_python_utils.color import print_error
+from bash_python_utils._color import print_error
 
 
 def numeric_key(value: str) -> tuple[int, float, str]:

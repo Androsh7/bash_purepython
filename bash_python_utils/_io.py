@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 # Project libraries
-from bash_python_utils.color import print_error
+from bash_python_utils._color import print_error
 
 
 def iter_lines(paths: list[str]) -> Iterator[tuple[str, str]]:

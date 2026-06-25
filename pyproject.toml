@@ -55,6 +55,7 @@ gzip = "bash_python_utils.gzip:main"
 gunzip = "bash_python_utils.gunzip:main"
 unzip = "bash_python_utils.unzip:main"
 zip = "bash_python_utils.zip:main"
+help = "bash_python_utils.help:main"
 
 [tool.ruff]
 target-version = "py313"

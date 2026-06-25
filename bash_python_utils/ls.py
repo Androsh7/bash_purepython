@@ -6,7 +6,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 # Project libraries
-from bash_python_utils.color import Color, print_error
+from bash_python_utils._color import Color, print_error
 
 
 def main():

@@ -4,7 +4,7 @@
 from argparse import ArgumentParser
 
 # Project libraries
-from bash_python_utils.color import print_error
+from bash_python_utils._color import print_error
 
 
 def main():
