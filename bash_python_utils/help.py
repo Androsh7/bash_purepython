@@ -7,6 +7,7 @@ from argparse import ArgumentParser
 # Project libraries
 import bash_python_utils
 
+
 def main():
     parser = ArgumentParser(prog="help", description="Prints all commands")
     parser.parse_args()
@@ -15,6 +16,7 @@ def main():
             continue
         print(name, end="  ")
     print()
+
 
 if __name__ == "__main__":
     main()

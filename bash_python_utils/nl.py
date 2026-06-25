@@ -10,8 +10,9 @@ from bash_python_utils._io import read_text
 
 def main():
     parser = ArgumentParser(prog="nl", description="Number lines of files")
-    parser.add_argument("-b", "--body-numbering", choices=["a", "t", "n"], default="t",
-                        help="a=all, t=non-empty (default), n=none")
+    parser.add_argument(
+        "-b", "--body-numbering", choices=["a", "t", "n"], default="t", help="a=all, t=non-empty (default), n=none"
+    )
     parser.add_argument("-s", "--number-separator", default="\t", help="Separator between number and line")
     parser.add_argument("-w", "--number-width", type=int, default=6, help="Width of the number column")
     parser.add_argument("-i", "--line-increment", type=int, default=1, help="Increment between numbers")
