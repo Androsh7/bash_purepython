@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `find`, with `-name`, `-iname`, `-type`, `-maxdepth` and `-mindepth`
 - `tree`, with `-a`, `-d` and `-L`
 
+### Fixed
+
+- `touch` took a single path, so `touch a b c` failed with an argument error
+- `touch` refused to touch a file that already existed unless `-f` was given,
+  rather than updating its timestamp. `-f` is now accepted and ignored, and
+  `-c` skips creating files that are missing
+
 ## 0.1.2 - 9/8/2026
 
 ### Fixed
