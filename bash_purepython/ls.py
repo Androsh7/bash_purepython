@@ -1,12 +1,11 @@
 """PurePython implementation of the bash ls command"""
 
 # Standard libraries
-import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
 # Project libraries
-from bash_purepython._color import Color, print_error
+from bash_purepython._color import print_error
 
 
 def main():
@@ -22,8 +21,7 @@ def main():
     path_list = [Path(path_str) for path_str in args.paths]
     for path in path_list:
         if not path.exists():
-            print_error(f"FileNotFound: {path}", Color.RED)
-            sys.exit(1)
+            print_error(f"FileNotFound: {path}")
 
     # Find all files in the list
     file_list: list[Path] = []
@@ -37,7 +35,7 @@ def main():
     if not args.all:
         trimmed_list = []
         for file_path in file_list:
-            if str(file_path).startswith("."):
+            if file_path.name.startswith("."):
                 continue
             trimmed_list.append(file_path)
         file_list = trimmed_list
@@ -47,6 +45,8 @@ def main():
     if not args.long:
         for file_path in file_list:
             print(str(file_path), end="  ")
+        if file_list:
+            print()
     else:
         for file_path in file_list:
             print(f"{'d' if file_path.is_dir() else 'f'} {file_path.stat().st_size} {file_path}")
