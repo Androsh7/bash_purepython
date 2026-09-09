@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bash_purepython"
-version = "0.1.1"
+version = "0.1.2"
 readme = "README.md"
 description = "PurePython implementations of common bash utilities"
 requires-python = ">=3.10"
@@ -75,4 +75,4 @@ max-line-length = 120
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bash_python_utils*"]
+include = ["bash_python*"]
