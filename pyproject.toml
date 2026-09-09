@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bash_purepython"
-version = "0.1.2"
+version = "0.2.0"
 readme = "README.md"
 description = "PurePython implementations of common bash utilities"
 requires-python = ">=3.10"
@@ -57,6 +57,8 @@ gzip = "bash_purepython.gzip:main"
 gunzip = "bash_purepython.gunzip:main"
 unzip = "bash_purepython.unzip:main"
 zip = "bash_purepython.zip:main"
+find = "bash_purepython.find:main"
+tree = "bash_purepython.tree:main"
 help = "bash_purepython.help:main"
 
 [tool.ruff]
