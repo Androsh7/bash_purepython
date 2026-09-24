@@ -10,6 +10,14 @@ from bash_purepython._io import read_text
 
 
 def numeric_key(value: str) -> tuple[int, float, str]:
+    """Return a sort key that orders numeric values before non-numeric ones
+
+    Args:
+        value: The text to build the key from
+
+    Returns:
+        A tuple that sorts numbers by value and everything else by text after them
+    """
     stripped = value.strip()
     try:
         return (0, float(stripped), value)
@@ -18,6 +26,7 @@ def numeric_key(value: str) -> tuple[int, float, str]:
 
 
 def main():
+    """Print the lines of the input in sorted order"""
     parser = ArgumentParser(prog="sort", description="Sort lines of text")
     parser.add_argument("-r", "--reverse", action="store_true", help="Reverse the result")
     parser.add_argument("-u", "--unique", action="store_true", help="Output only unique lines")

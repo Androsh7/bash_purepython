@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 def main():
+    """Print the current working directory"""
     parser = ArgumentParser(prog="pwd", description="Print the current working directory")
     parser.parse_args()
     print(Path.cwd())

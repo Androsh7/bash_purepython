@@ -10,6 +10,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Move each source to the destination"""
     parser = ArgumentParser(prog="mv", description="Move or rename files and directories")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing destinations")
     parser.add_argument("-n", "--no-clobber", action="store_true", help="Do not overwrite existing files")

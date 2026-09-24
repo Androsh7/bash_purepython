@@ -9,6 +9,7 @@ import bash_purepython
 
 
 def main():
+    """Print the name of every command in the package"""
     parser = ArgumentParser(prog="help", description="Prints all commands")
     parser.parse_args()
     for _, name, _ in pkgutil.iter_modules(bash_purepython.__path__):

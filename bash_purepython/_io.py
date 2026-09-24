@@ -13,7 +13,7 @@ NUMERIC_SHORTHAND = re.compile(r"^-([0-9]+)$")
 
 
 def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
-    """The arguments with the legacy -<count> form rewritten as -n <count>
+    """Return the arguments with the legacy -<count> form rewritten as -n <count>
 
     head and tail accept a bare line count as an option, so `head -3 file`
     means `head -n 3 file`
@@ -38,9 +38,9 @@ def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
 
 
 def iter_lines(paths: list[str]) -> Iterator[tuple[str, str]]:
-    """Yield (source_label, line) for every line in paths, or stdin if empty.
+    """Yield (source_label, line) for every line in paths, or stdin if empty
 
-    Lines retain their trailing newline when present.
+    Lines retain their trailing newline when present
     """
     if not paths:
         for line in sys.stdin:
@@ -58,7 +58,7 @@ def iter_lines(paths: list[str]) -> Iterator[tuple[str, str]]:
 
 
 def read_text(paths: list[str]) -> str:
-    """Read the concatenation of paths, or stdin if no paths."""
+    """Return the concatenation of paths, or stdin if no paths"""
     if not paths:
         return sys.stdin.read()
     chunks: list[str] = []
@@ -73,7 +73,7 @@ def read_text(paths: list[str]) -> str:
 
 
 def read_bytes(paths: list[str]) -> bytes:
-    """Read the concatenation of paths as bytes, or stdin if no paths."""
+    """Return the concatenation of paths as bytes, or stdin if no paths"""
     if not paths:
         return sys.stdin.buffer.read()
     chunks: list[bytes] = []

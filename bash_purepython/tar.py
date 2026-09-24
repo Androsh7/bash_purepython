@@ -10,6 +10,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Create, extract, or list a tar archive"""
     parser = ArgumentParser(prog="tar", description="Create, extract, or list tar archives")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("-c", "--create", action="store_true", help="Create a new archive")

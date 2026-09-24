@@ -9,7 +9,7 @@ from bash_purepython._color import print_error
 
 
 def collect_files(path_list: list[Path], recursive: bool) -> list[Path]:
-    """Every file named by the given paths
+    """Return every file named by the given paths
 
     Args:
         path_list: The files or directories to list
@@ -28,7 +28,7 @@ def collect_files(path_list: list[Path], recursive: bool) -> list[Path]:
 
 
 def print_listing(file_list: list[Path], long: bool) -> None:
-    """Writes the listing to stdout
+    """Write the listing to stdout
 
     Args:
         file_list: The files to print, already sorted
@@ -46,6 +46,7 @@ def print_listing(file_list: list[Path], long: bool) -> None:
 
 
 def main():
+    """List the files at the given paths"""
     parser = ArgumentParser(prog="ls", description="List files in the given directory/directories")
     parser.add_argument("-l", "--long", action="store_true", help="Prints a long listing of files")
     parser.add_argument("-a", "--all", action="store_true", help="Prints all files including hidden ones")

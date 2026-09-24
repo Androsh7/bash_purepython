@@ -11,6 +11,7 @@ from bash_purepython._io import expand_numeric_shorthand
 
 
 def main():
+    """Print the last lines or bytes of each file"""
     parser = ArgumentParser(prog="tail", description="Print the last lines of files")
     parser.add_argument("-n", "--lines", type=int, default=10, help="Number of lines to print")
     parser.add_argument("-c", "--bytes", type=int, default=None, help="Number of bytes to print")

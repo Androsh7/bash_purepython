@@ -10,6 +10,14 @@ from bash_purepython._io import read_text
 
 
 def parse_list(spec: str) -> list[tuple[int, int]]:
+    """Return the inclusive one-based ranges named by a cut list such as 1,3-5
+
+    Args:
+        spec: The comma separated list of positions and ranges
+
+    Returns:
+        One (start, end) pair per entry, with open-ended ranges capped at a large end
+    """
     ranges: list[tuple[int, int]] = []
     for raw in spec.split(","):
         part = raw.strip()
@@ -28,10 +36,20 @@ def parse_list(spec: str) -> list[tuple[int, int]]:
 
 
 def in_ranges(idx: int, ranges: list[tuple[int, int]]) -> bool:
+    """Return whether a one-based position falls inside any of the ranges
+
+    Args:
+        idx: The position to test
+        ranges: The inclusive (start, end) pairs to test against
+
+    Returns:
+        True when at least one range contains the position
+    """
     return any(start <= idx <= end for start, end in ranges)
 
 
 def main():
+    """Print the selected fields, characters, or bytes of each line"""
     parser = ArgumentParser(prog="cut", description="Remove sections from each line")
     parser.add_argument("-d", "--delimiter", default="\t", help="Field delimiter (default TAB)")
     parser.add_argument("-f", "--fields", help="Field list")

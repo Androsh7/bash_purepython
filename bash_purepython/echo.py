@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 
 
 def main():
+    """Print the arguments separated by spaces"""
     parser = ArgumentParser(prog="echo", description="Print arguments to stdout")
     parser.add_argument("-n", dest="no_newline", action="store_true", help="Do not print trailing newline")
     parser.add_argument("-e", dest="escapes", action="store_true", help="Interpret backslash escapes")

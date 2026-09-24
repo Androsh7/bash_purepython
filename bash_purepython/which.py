@@ -7,6 +7,7 @@ from argparse import ArgumentParser
 
 
 def main():
+    """Print the path of each executable found on PATH"""
     parser = ArgumentParser(prog="which", description="Locate an executable in PATH")
     parser.add_argument("-a", "--all", action="store_true", help="Print all matches, not just the first")
     parser.add_argument("names", nargs="+", help="Executables to find")

@@ -7,7 +7,7 @@ import subprocess
 # Third-party libraries
 import pytest
 
-ENFORCE_RUFF_LINTING_SUGGESTIONS = False
+ENFORCE_RUFF_LINTING_SUGGESTIONS = True
 
 
 def test_no_ruff_formatting_changes():

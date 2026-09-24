@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 
 
 def main():
+    """Print each path's final component, minus an optional suffix"""
     parser = ArgumentParser(prog="basename", description="Strip directory and optional suffix from a filename")
     parser.add_argument("-s", "--suffix", default=None, help="Suffix to remove")
     parser.add_argument("-a", "--multiple", action="store_true", help="Support multiple arguments")

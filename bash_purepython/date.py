@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 
 def main():
+    """Print the current date and time"""
     parser = ArgumentParser(prog="date", description="Print the current date and time")
     parser.add_argument("-u", "--utc", action="store_true", help="Use UTC")
     parser.add_argument("format", nargs="?", default=None, help="strftime format prefixed with '+'")

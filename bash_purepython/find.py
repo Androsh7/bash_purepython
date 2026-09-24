@@ -15,7 +15,7 @@ TYPE_SYMLINK = "l"
 
 
 def walk(root: Path, max_depth: int | None) -> Iterator[tuple[Path, int]]:
-    """Every path at or below root, paired with its depth
+    """Yield every path at or below root, paired with its depth
 
     Args:
         root: The file or directory to start from, reported at depth zero
@@ -43,7 +43,7 @@ def walk(root: Path, max_depth: int | None) -> Iterator[tuple[Path, int]]:
 
 
 def type_matches(path: Path, wanted: str | None) -> bool:
-    """Whether the path is of the requested type
+    """Return whether the path is of the requested type
 
     Args:
         path: The path to test
@@ -62,7 +62,7 @@ def type_matches(path: Path, wanted: str | None) -> bool:
 
 
 def name_matches(path: Path, pattern: str | None, ignore_case: bool) -> bool:
-    """Whether the path's own name matches a glob
+    """Return whether the path's own name matches a glob
 
     Args:
         path: The path whose name is tested
@@ -80,6 +80,7 @@ def name_matches(path: Path, pattern: str | None, ignore_case: bool) -> bool:
 
 
 def main():
+    """Print every path under the given roots that passes the filters"""
     parser = ArgumentParser(prog="find", description="Search for files in a directory hierarchy")
     parser.add_argument("paths", nargs="*", default=["."], help="Directories to search")
     parser.add_argument("-name", dest="name", help="Match the entry name against a glob pattern")

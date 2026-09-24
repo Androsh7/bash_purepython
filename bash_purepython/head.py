@@ -11,6 +11,7 @@ from bash_purepython._io import expand_numeric_shorthand
 
 
 def main():
+    """Print the first lines or bytes of each file"""
     parser = ArgumentParser(prog="head", description="Print the first lines of files")
     parser.add_argument("-n", "--lines", type=int, default=10, help="Number of lines to print")
     parser.add_argument("-c", "--bytes", type=int, default=None, help="Number of bytes to print")
@@ -39,13 +40,7 @@ def main():
         if args.bytes is not None:
             sys.stdout.buffer.write(data[: args.bytes])
         else:
-            kept: list[bytes] = []
-            count = 0
-            for line in data.splitlines(keepends=True):
-                if count >= args.lines:
-                    break
-                kept.append(line)
-                count += 1
+            kept = data.splitlines(keepends=True)[: max(args.lines, 0)]
             sys.stdout.buffer.write(b"".join(kept))
 
 

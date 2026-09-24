@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 
 
 def main():
+    """Print each path with its final component removed"""
     parser = ArgumentParser(prog="dirname", description="Strip last component from a filename")
     parser.add_argument("names", nargs="+", help="Paths")
     args = parser.parse_args()

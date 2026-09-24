@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 
 
 def main():
+    """Print every environment variable"""
     parser = ArgumentParser(prog="env", description="Print the environment")
     parser.add_argument("-0", dest="null", action="store_true", help="Terminate entries with NUL instead of newline")
     args = parser.parse_args()

@@ -14,7 +14,7 @@ ASCII_CHARACTERS = ("|-- ", "`-- ", "|   ")
 
 
 def branch_characters() -> tuple[str, str, str]:
-    """The branch, last branch and vertical strings stdout can encode
+    """Return the branch, last branch and vertical strings stdout can encode
 
     Returns:
         The box drawing characters, or ASCII stand-ins on a narrow encoding
@@ -28,7 +28,7 @@ def branch_characters() -> tuple[str, str, str]:
 
 
 def visible_children(directory: Path, show_all: bool, directories_only: bool) -> list[Path]:
-    """The entries of a directory in display order
+    """Return the entries of a directory in display order
 
     Args:
         directory: The directory to list
@@ -47,7 +47,7 @@ def visible_children(directory: Path, show_all: bool, directories_only: bool) ->
 
 
 def render(directory: Path, prefix: str, depth: int, options: Namespace) -> tuple[int, int]:
-    """Prints one level of the tree and everything below it
+    """Print one level of the tree and everything below it
 
     Args:
         directory: The directory being listed
@@ -87,6 +87,7 @@ def render(directory: Path, prefix: str, depth: int, options: Namespace) -> tupl
 
 
 def main():
+    """Print each directory as a tree followed by a summary count"""
     parser = ArgumentParser(prog="tree", description="List the contents of directories as a tree")
     parser.add_argument("paths", nargs="*", default=["."], help="Directories to list")
     parser.add_argument("-a", "--all", action="store_true", help="Print entries whose name starts with a dot")

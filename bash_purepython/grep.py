@@ -4,13 +4,23 @@
 import re
 import sys
 from argparse import ArgumentParser
+from collections.abc import Iterator
 from pathlib import Path
 
 # Project libraries
 from bash_purepython._color import print_error
 
 
-def iter_files(paths: list[str], recursive: bool):
+def iter_files(paths: list[str], recursive: bool) -> Iterator[tuple[str, str]]:
+    """Yield the label and full text of every file to search
+
+    Args:
+        paths: The files or directories to read, or empty to read stdin
+        recursive: Whether directories are walked instead of rejected
+
+    Yields:
+        The label to print for the source and its full text
+    """
     if not paths:
         yield "-", sys.stdin.read()
         return
@@ -29,6 +39,7 @@ def iter_files(paths: list[str], recursive: bool):
 
 
 def main():
+    """Print the lines matching a pattern and exit with status one when nothing matched"""
     parser = ArgumentParser(prog="grep", description="Search lines matching a pattern")
     parser.add_argument("-i", "--ignore-case", action="store_true", help="Case insensitive match")
     parser.add_argument("-v", "--invert-match", action="store_true", help="Select non-matching lines")

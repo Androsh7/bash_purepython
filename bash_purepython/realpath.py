@@ -9,6 +9,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Print the resolved absolute form of each path"""
     parser = ArgumentParser(prog="realpath", description="Print the resolved absolute path")
     parser.add_argument("-e", "--canonicalize-existing", action="store_true", help="All components must exist")
     parser.add_argument("paths", nargs="+", help="Paths to resolve")

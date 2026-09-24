@@ -10,7 +10,7 @@ from bash_purepython._color import print_warning
 
 
 def touch_path(path: Path, create: bool) -> bool:
-    """Creates the file, or updates the timestamp of one that already exists
+    """Create the file, or update the timestamp of one that already exists
 
     Args:
         path: The file to touch
@@ -35,6 +35,7 @@ def touch_path(path: Path, create: bool) -> bool:
 
 
 def main():
+    """Create each path or update its timestamp"""
     parser = ArgumentParser(prog="touch", description="Create files or update their timestamps")
     parser.add_argument("-c", "--no-create", action="store_true", help="Do not create files that do not exist")
     parser.add_argument("-f", "--force", action="store_true", help="Accepted for compatibility and ignored")

@@ -10,6 +10,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Copy each source to the destination"""
     parser = ArgumentParser(prog="cp", description="Copy files and directories")
     parser.add_argument("-r", "-R", "--recursive", action="store_true", help="Copy directories recursively")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing destinations")

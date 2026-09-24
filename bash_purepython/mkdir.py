@@ -9,6 +9,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Create each directory"""
     parser = ArgumentParser(prog="mkdir", description="Create directories")
     parser.add_argument("-p", "--parents", action="store_true", help="Create parents as needed; no error if existing")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print created paths")

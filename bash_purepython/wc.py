@@ -10,6 +10,15 @@ from bash_purepython._color import print_error
 
 
 def count(data: bytes, text: str) -> tuple[int, int, int, int]:
+    """Return the line, word, character, and byte counts of one input
+
+    Args:
+        data: The raw bytes of the input
+        text: The same input decoded as text
+
+    Returns:
+        The counts as (lines, words, characters, bytes)
+    """
     lines = data.count(b"\n")
     words = len(text.split())
     chars = len(text)
@@ -18,6 +27,7 @@ def count(data: bytes, text: str) -> tuple[int, int, int, int]:
 
 
 def main():
+    """Print the line, word, and byte counts of each input"""
     parser = ArgumentParser(prog="wc", description="Print line, word, and byte counts")
     parser.add_argument("-l", "--lines", action="store_true", help="Print line count")
     parser.add_argument("-w", "--words", action="store_true", help="Print word count")

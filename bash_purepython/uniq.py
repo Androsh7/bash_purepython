@@ -9,6 +9,7 @@ from bash_purepython._io import read_text
 
 
 def main():
+    """Print the input with adjacent duplicate lines collapsed"""
     parser = ArgumentParser(prog="uniq", description="Filter adjacent matching lines")
     parser.add_argument("-c", "--count", action="store_true", help="Prefix lines with their count")
     parser.add_argument("-d", "--repeated", action="store_true", help="Only output duplicated lines")
