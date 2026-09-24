@@ -1,12 +1,40 @@
 """Shared I/O helpers for text-processing commands"""
 
 # Standard libraries
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 # Project libraries
 from bash_purepython._color import print_error
+
+NUMERIC_SHORTHAND = re.compile(r"^-([0-9]+)$")
+
+
+def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
+    """The arguments with the legacy -<count> form rewritten as -n <count>
+
+    head and tail accept a bare line count as an option, so `head -3 file`
+    means `head -n 3 file`
+
+    Args:
+        arguments: The arguments to rewrite, excluding the program name
+
+    Returns:
+        A new argument list with every -<count> replaced by -n <count>
+    """
+    expanded: list[str] = []
+    for index, argument in enumerate(arguments):
+        if argument == "--":
+            expanded.extend(arguments[index:])
+            break
+        match = NUMERIC_SHORTHAND.match(argument)
+        if match:
+            expanded.extend(["-n", match.group(1)])
+        else:
+            expanded.append(argument)
+    return expanded
 
 
 def iter_lines(paths: list[str]) -> Iterator[tuple[str, str]]:
