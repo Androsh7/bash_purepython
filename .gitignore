@@ -5,3 +5,6 @@
 *.egg-info
 __pycache__/
 dist/
+
+# UV
+uv.lock
