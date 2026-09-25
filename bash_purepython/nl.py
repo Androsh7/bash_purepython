@@ -9,6 +9,7 @@ from bash_purepython._io import read_text
 
 
 def main():
+    """Print each line prefixed with its number"""
     parser = ArgumentParser(prog="nl", description="Number lines of files")
     parser.add_argument(
         "-b", "--body-numbering", choices=["a", "t", "n"], default="t", help="a=all, t=non-empty (default), n=none"

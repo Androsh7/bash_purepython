@@ -9,6 +9,7 @@ from bash_purepython._io import read_text
 
 
 def main():
+    """Print each line reversed"""
     parser = ArgumentParser(prog="rev", description="Reverse each line of input")
     parser.add_argument("paths", nargs="*", help="Files to read (stdin if none)")
     args = parser.parse_args()

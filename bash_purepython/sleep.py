@@ -11,6 +11,14 @@ SUFFIXES = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 def parse_duration(spec: str) -> float:
+    """Return the number of seconds a duration string names
+
+    Args:
+        spec: A number with an optional s, m, h, or d suffix
+
+    Returns:
+        The duration in seconds
+    """
     if not spec:
         print_error("missing duration")
     multiplier = 1
@@ -25,6 +33,7 @@ def parse_duration(spec: str) -> float:
 
 
 def main():
+    """Sleep for the total of the given durations"""
     parser = ArgumentParser(prog="sleep", description="Sleep for the given duration")
     parser.add_argument("durations", nargs="+", help="Durations (e.g. 1.5, 2s, 3m, 1h)")
     args = parser.parse_args()

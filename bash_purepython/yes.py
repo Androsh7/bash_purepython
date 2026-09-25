@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 
 
 def main():
+    """Print a line repeatedly until interrupted"""
     parser = ArgumentParser(prog="yes", description="Print a string repeatedly until killed")
     parser.add_argument("words", nargs="*", default=["y"], help="Strings to print (default 'y')")
     args = parser.parse_args()

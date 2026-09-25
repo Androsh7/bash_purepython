@@ -9,6 +9,7 @@ from bash_purepython._io import read_text
 
 
 def main():
+    """Concatenate the named files, or stdin, to stdout"""
     parser = ArgumentParser(prog="cat", description="Concatenate files and print to stdout")
     parser.add_argument("-n", "--number", action="store_true", help="Number all output lines")
     parser.add_argument("-b", "--number-nonblank", action="store_true", help="Number non-empty output lines")

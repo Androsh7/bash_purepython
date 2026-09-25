@@ -9,6 +9,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Remove each empty directory"""
     parser = ArgumentParser(prog="rmdir", description="Remove empty directories")
     parser.add_argument("-p", "--parents", action="store_true", help="Remove empty parent directories")
     parser.add_argument("paths", nargs="+", help="Directories to remove")

@@ -10,6 +10,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Create a zip archive from the given sources"""
     parser = ArgumentParser(prog="zip", description="Create a zip archive")
     parser.add_argument("-r", "--recurse", action="store_true", help="Recurse into directories")
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")

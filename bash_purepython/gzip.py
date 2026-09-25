@@ -11,6 +11,11 @@ from bash_purepython._color import print_error
 
 
 def build_parser() -> ArgumentParser:
+    """Return the argument parser shared by gzip and gunzip
+
+    Returns:
+        A parser accepting the gzip options and input paths
+    """
     parser = ArgumentParser(prog="gzip", description="Compress or decompress files with gzip")
     parser.add_argument("-d", "--decompress", action="store_true", help="Decompress")
     parser.add_argument("-k", "--keep", action="store_true", help="Keep input files")
@@ -22,6 +27,11 @@ def build_parser() -> ArgumentParser:
 
 
 def main(force_decompress: bool = False):
+    """Compress or decompress each input file
+
+    Args:
+        force_decompress: Whether to decompress even when -d was not given
+    """
     args = build_parser().parse_args()
     decompress = args.decompress or force_decompress
 
@@ -30,10 +40,7 @@ def main(force_decompress: bool = False):
         if not src.exists():
             print_error(f"{src}: No such file or directory")
         if decompress:
-            if src.suffix == ".gz":
-                dst = src.with_suffix("")
-            else:
-                dst = src.with_suffix(src.suffix + ".out")
+            dst = src.with_suffix("") if src.suffix == ".gz" else src.with_suffix(src.suffix + ".out")
             data = _gzip.decompress(src.read_bytes())
         else:
             dst = src.with_suffix(src.suffix + ".gz")

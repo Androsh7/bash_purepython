@@ -5,6 +5,7 @@ import sys
 
 
 def main():
+    """Exit with status zero"""
     sys.exit(0)
 
 

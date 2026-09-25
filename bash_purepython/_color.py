@@ -17,10 +17,20 @@ class Color(StrEnum):
     WHITE = "\033[0;37m"
 
 
-def print_error(error: any):
+def print_error(error: object) -> None:
+    """Print an error in red and exit with status one
+
+    Args:
+        error: The message to print
+    """
     print(Color.RED, error, Color.RESET, sep="")
     sys.exit(1)
 
 
-def print_warning(error: any):
+def print_warning(error: object) -> None:
+    """Print a warning in yellow
+
+    Args:
+        error: The message to print
+    """
     print(Color.YELLOW, error, Color.RESET, sep="")

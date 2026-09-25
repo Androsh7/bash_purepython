@@ -9,6 +9,14 @@ from bash_purepython._color import print_error
 
 
 def expand(spec: str) -> str:
+    """Return the character set with every a-z style range expanded
+
+    Args:
+        spec: The set as typed on the command line
+
+    Returns:
+        Every character the set names, in order
+    """
     out: list[str] = []
     i = 0
     while i < len(spec):
@@ -25,6 +33,7 @@ def expand(spec: str) -> str:
 
 
 def main():
+    """Translate, delete, or squeeze the characters of stdin"""
     parser = ArgumentParser(prog="tr", description="Translate or delete characters from stdin")
     parser.add_argument("-d", "--delete", action="store_true", help="Delete characters in set1")
     parser.add_argument("-s", "--squeeze-repeats", action="store_true", help="Squeeze runs in the last operand set")

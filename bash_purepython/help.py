@@ -5,13 +5,14 @@ import pkgutil
 from argparse import ArgumentParser
 
 # Project libraries
-import bash_python_utils
+import bash_purepython
 
 
 def main():
+    """Print the name of every command in the package"""
     parser = ArgumentParser(prog="help", description="Prints all commands")
     parser.parse_args()
-    for _, name, _ in pkgutil.iter_modules(bash_python_utils.__path__):
+    for _, name, _ in pkgutil.iter_modules(bash_purepython.__path__):
         if name.startswith("_"):
             continue
         print(name, end="  ")

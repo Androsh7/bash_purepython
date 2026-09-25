@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 
 
 def main():
+    """Print the current user name"""
     parser = ArgumentParser(prog="whoami", description="Print the current user name")
     parser.parse_args()
     print(getpass.getuser())

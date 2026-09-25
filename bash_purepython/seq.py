@@ -8,6 +8,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Print a sequence of numbers"""
     parser = ArgumentParser(prog="seq", description="Print a sequence of numbers")
     parser.add_argument("-s", "--separator", default="\n", help="Separator (default newline)")
     parser.add_argument("-w", "--equal-width", action="store_true", help="Pad numbers with leading zeros")

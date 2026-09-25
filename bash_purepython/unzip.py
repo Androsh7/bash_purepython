@@ -10,6 +10,7 @@ from bash_purepython._color import print_error
 
 
 def main():
+    """Extract or list the members of a zip archive"""
     parser = ArgumentParser(prog="unzip", description="Extract files from a zip archive")
     parser.add_argument("-d", "--directory", default=".", help="Extract into this directory")
     parser.add_argument("-l", "--list", action="store_true", help="List archive contents")

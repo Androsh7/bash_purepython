@@ -7,15 +7,17 @@ from pathlib import Path
 
 # Project libraries
 from bash_purepython._color import print_error
+from bash_purepython._io import expand_numeric_shorthand
 
 
 def main():
+    """Print the last lines or bytes of each file"""
     parser = ArgumentParser(prog="tail", description="Print the last lines of files")
     parser.add_argument("-n", "--lines", type=int, default=10, help="Number of lines to print")
     parser.add_argument("-c", "--bytes", type=int, default=None, help="Number of bytes to print")
     parser.add_argument("-q", "--quiet", action="store_true", help="Never print headers")
     parser.add_argument("paths", nargs="*", help="Files to read (stdin if none)")
-    args = parser.parse_args()
+    args = parser.parse_args(expand_numeric_shorthand(sys.argv[1:]))
 
     sources: list[tuple[str, bytes]] = []
     if not args.paths:
