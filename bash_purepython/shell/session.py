@@ -62,7 +62,7 @@ class StageStreams:
     stdin: TextIO
     stdout: TextIO
     stderr: TextIO
-    stdout_capture: OutputCapture | None
+    pipe_capture: OutputCapture | None
     stderr_capture: OutputCapture | None
     files: tuple[TextIO, ...]
     failure: str | None
@@ -399,7 +399,7 @@ class ShellSession:
                 streams.stderr.flush()
                 for opened in streams.files:
                     opened.close()
-            if streams.stdout_capture is not None and streams.stdout_capture.overflowed:
+            if streams.pipe_capture is not None and streams.pipe_capture.overflowed:
                 streams.stderr.write(f"{SHELL_NAME}: {command.name}: output exceeded {OUTPUT_LIMIT_BYTES} bytes\n")
                 exit_code = EXIT_CODE_FAILURE
             if streams.stderr_capture is not None:
@@ -411,20 +411,22 @@ class ShellSession:
                         )
                     )
                     exit_code = EXIT_CODE_FAILURE
-            if streams.stdout_capture is None or command.redirect is not None:
+            if streams.pipe_capture is None:
                 continue
             if position == last_position:
-                stdout_parts.append(streams.stdout_capture.getvalue())
+                stdout_parts.append(streams.pipe_capture.getvalue())
             else:
-                stdin_data = streams.stdout_capture.getvalue()
+                stdin_data = streams.pipe_capture.getvalue()
         return b"".join(stdout_parts), b"".join(stderr_parts), exit_code
 
     def _open_stage_streams(self, command: SimpleCommand, stdin_data: bytes, is_last: bool) -> StageStreams:
         """Bind one stage's stdin, stdout and stderr according to its redirects
 
-        stdout goes to its file, to the sink for the last stage, or to a capture that
-        feeds the next stage. stderr goes to its file, joins stdout for 2>&1, or goes
-        to the sink or a capture. stdin comes from its file or from the previous stage
+        stdout goes to its file or to the pipe: the capture feeding the next stage or
+        the result, or the sink for the last stage. stderr goes to its file, shares
+        stdout's file when both name the same one, goes to the pipe for a 2>&1 given
+        before any >, or goes to the sink or a capture. stdin comes from its file or
+        the previous stage
 
         Args:
             command: The command whose redirects decide the streams
@@ -435,20 +437,27 @@ class ShellSession:
             The streams, or a failure message when a redirect target cannot be opened
         """
         files: list[TextIO] = []
-        stdout_capture = None
+        pipe_capture = None
         stderr_capture = None
+        # The pipe is where stdout goes unless a file takes it: the next stage, the
+        # result, or the terminal for the last stage of a streaming session
+        if is_last and self.output_sink is not None:
+            pipe = make_sink_stream(self.output_sink, STDOUT_KIND)
+        else:
+            pipe_capture = OutputCapture(OUTPUT_LIMIT_BYTES)
+            pipe = pipe_capture.stream
         if command.redirect is not None:
             opened = open_redirect(command.redirect)
             if opened is None:
                 return self._failed_streams(f"{command.redirect.target}: cannot open for writing")
             files.append(opened)
             stdout = opened
-        elif is_last and self.output_sink is not None:
-            stdout = make_sink_stream(self.output_sink, STDOUT_KIND)
         else:
-            stdout_capture = OutputCapture(OUTPUT_LIMIT_BYTES)
-            stdout = stdout_capture.stream
-        if command.stderr_redirect is not None:
+            stdout = pipe
+        if command.stderr_redirect is not None and command.stderr_redirect == command.redirect:
+            # Both streams name the same file, so they share one handle and one position
+            stderr = stdout
+        elif command.stderr_redirect is not None:
             opened = open_redirect(command.stderr_redirect)
             if opened is None:
                 close_all(files)
@@ -456,7 +465,7 @@ class ShellSession:
             files.append(opened)
             stderr = opened
         elif command.stderr_to_stdout:
-            stderr = stdout
+            stderr = pipe
         elif self.output_sink is not None:
             stderr = make_sink_stream(self.output_sink, STDERR_KIND)
         else:
@@ -475,7 +484,7 @@ class ShellSession:
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
-            stdout_capture=stdout_capture,
+            pipe_capture=pipe_capture,
             stderr_capture=stderr_capture,
             files=tuple(files),
             failure=None,
@@ -496,7 +505,7 @@ class ShellSession:
             stdin=make_stdin(b""),
             stdout=stderr,
             stderr=stderr,
-            stdout_capture=None,
+            pipe_capture=None,
             stderr_capture=stderr_capture,
             files=(),
             failure=failure,

@@ -93,14 +93,24 @@ def test_parse_keeps_every_kind_of_redirect_on_the_command() -> None:
     assert not redirects.stderr_to_stdout
 
 
-def test_parse_joins_stderr_to_stdout_for_both_forms() -> None:
-    """Check that 2>&1 and &> both mark stderr as joined to stdout"""
+def test_parse_sends_stderr_to_the_file_stdout_already_names() -> None:
+    """Check that >out 2>&1 points stderr at out, and &> names the file for both"""
     merged = parse_line("cmd >out 2>&1").pipelines[0].commands[0].redirects
     both = parse_line("cmd &>all").pipelines[0].commands[0].redirects
 
-    assert merged.stderr_to_stdout
-    assert both.stderr_to_stdout
+    assert expand_word(merged.stderr_target, {}, HOME, 0) == "out"
+    assert not merged.stderr_to_stdout
+    assert expand_word(both.stderr_target, {}, HOME, 0) == "all"
     assert expand_word(both.stdout_target, {}, HOME, 0) == "all"
+
+
+def test_parse_applies_redirects_left_to_right() -> None:
+    """Check that 2>&1 before > keeps stderr on the pipe while stdout moves to the file"""
+    redirects = parse_line("cmd 2>&1 >out").pipelines[0].commands[0].redirects
+
+    assert redirects.stderr_to_stdout
+    assert redirects.stderr_target is None
+    assert expand_word(redirects.stdout_target, {}, HOME, 0) == "out"
 
 
 @pytest.mark.parametrize(

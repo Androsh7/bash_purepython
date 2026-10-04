@@ -481,3 +481,24 @@ def test_run_line_refuses_extra_redirects_on_a_host_command(shell_home: Path) ->
     assert result.exit_code == 2
     assert "browser commands" in result.stderr
     assert result.host_call is None
+
+
+def test_run_line_keeps_stderr_on_the_pipe_when_joined_before_stdout_moves(
+    session: ShellSession, shell_home: Path
+) -> None:
+    """Check that 2>&1 >out sends the error down the pipe and nothing into out"""
+    result = session.run_line("cat missing.txt 2>&1 >out.txt | grep -c missing")
+
+    assert result.stdout.strip() == "1"
+    assert (shell_home / "out.txt").read_bytes() == b""
+
+
+def test_run_line_shares_one_file_when_both_streams_name_it(session: ShellSession, shell_home: Path) -> None:
+    """Check that >both 2>&1 does not let one stream overwrite the other"""
+    result = session.run_line("which cd nothing >both.txt 2>&1")
+
+    text = (shell_home / "both.txt").read_text()
+    assert "shell builtin" in text
+    assert "no nothing" in text
+    assert result.stdout == ""
+    assert result.stderr == ""

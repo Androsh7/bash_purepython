@@ -29,7 +29,10 @@ REDIRECTS_WITH_TARGET = {
 
 
 def apply_redirect(redirects: RawRedirects, kind: TokenKind, target: RawWord | None) -> RawRedirects:
-    """Return the redirects with one more operator applied, the last of a kind winning
+    """Return the redirects with one more operator applied, in the order bash applies them
+
+    2>&1 sends stderr wherever stdout goes at that point: a file named earlier on the
+    line, or the pipe or terminal when none was. A > that comes later moves only stdout
 
     Args:
         redirects: The redirects gathered so far
@@ -79,18 +82,18 @@ def apply_redirect(redirects: RawRedirects, kind: TokenKind, target: RawWord | N
         return RawRedirects(
             stdout_target=redirects.stdout_target,
             stdout_append=redirects.stdout_append,
-            stderr_target=None,
-            stderr_append=False,
-            stderr_to_stdout=True,
+            stderr_target=redirects.stdout_target,
+            stderr_append=redirects.stdout_append,
+            stderr_to_stdout=redirects.stdout_target is None,
             stdin_source=redirects.stdin_source,
         )
     if kind == TokenKind.REDIRECT_BOTH:
         return RawRedirects(
             stdout_target=target,
             stdout_append=False,
-            stderr_target=None,
+            stderr_target=target,
             stderr_append=False,
-            stderr_to_stdout=True,
+            stderr_to_stdout=False,
             stdin_source=redirects.stdin_source,
         )
     return RawRedirects(
