@@ -15,7 +15,7 @@ def main():
     try:
         while True:
             sys.stdout.write(line)
-    except (BrokenPipeError, KeyboardInterrupt):
+    except BrokenPipeError:
         return
 
 

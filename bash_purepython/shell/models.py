@@ -147,18 +147,9 @@ class SimpleCommand:
 
 @dataclass(frozen=True, slots=True)
 class Pipeline:
-    """Hold the commands joined by pipes"""
+    """Hold the commands joined by pipes, or nothing for a command that expanded to no words"""
 
     commands: tuple[SimpleCommand, ...]
-
-    def __post_init__(self):
-        """Reject an empty pipeline
-
-        Raises:
-            ValueError: If there are no commands
-        """
-        if not self.commands:
-            raise ValueError("a pipeline needs at least one command")
 
 
 @dataclass(frozen=True, slots=True)

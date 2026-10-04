@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `print_error` and `print_warning` wrote to stdout, so an error from one
   command in a pipeline was fed to the next; they now write to stderr
 - `help` listed subpackages as if they were commands
+- `yes` swallowed a `KeyboardInterrupt` and exited 0; it now exits 130 like the real one
 - The wheel only packaged the top-level package, so subpackages were left out
 - Inside double quotes a backslash escaped every character; it now escapes only `$`,
   `"`, `\` and backtick, so `grep "\.txt"` keeps its backslash

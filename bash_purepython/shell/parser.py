@@ -20,7 +20,7 @@ CHAIN_OPERATORS = {
 REDIRECT_KINDS = {TokenKind.REDIRECT_WRITE, TokenKind.REDIRECT_APPEND}
 
 
-def parse_simple_command(tokens: list[Token], index: int) -> tuple[SimpleCommand, int]:
+def parse_simple_command(tokens: list[Token], index: int) -> tuple[SimpleCommand | None, int]:
     """Return the command starting at index and the index of the token after it
 
     Args:
@@ -28,10 +28,11 @@ def parse_simple_command(tokens: list[Token], index: int) -> tuple[SimpleCommand
         index: The position of the command's first token
 
     Raises:
-        ShellSyntaxError: If the command is empty or a redirect has no target
+        ShellSyntaxError: If a redirect has no target or stands without a command
 
     Returns:
-        The command and the position of the next operator or the end
+        The command, or None when there are no words before the next operator, and the
+        position of that operator or the end
     """
     argv: list[str] = []
     redirect = None
@@ -49,13 +50,16 @@ def parse_simple_command(tokens: list[Token], index: int) -> tuple[SimpleCommand
             continue
         break
     if not argv:
-        unexpected = tokens[index].value if index < len(tokens) else "newline"
-        raise ShellSyntaxError(f"syntax error near unexpected token '{unexpected}'")
+        if redirect is not None:
+            raise ShellSyntaxError("syntax error: redirect without a command")
+        return None, index
     return SimpleCommand(argv=tuple(argv), redirect=redirect), index
 
 
 def parse_pipeline(tokens: list[Token], index: int) -> tuple[Pipeline, int]:
     """Return the pipeline starting at index and the index of the token after it
+
+    A lone command that expanded to no words is an empty pipeline, which runs nothing
 
     Args:
         tokens: The whole token list
@@ -70,8 +74,12 @@ def parse_pipeline(tokens: list[Token], index: int) -> tuple[Pipeline, int]:
     commands: list[SimpleCommand] = []
     while True:
         command, index = parse_simple_command(tokens, index)
-        commands.append(command)
-        if index < len(tokens) and tokens[index].kind == TokenKind.PIPE:
+        piped = index < len(tokens) and tokens[index].kind == TokenKind.PIPE
+        if command is None and (commands or piped):
+            raise ShellSyntaxError("syntax error near unexpected token '|'")
+        if command is not None:
+            commands.append(command)
+        if piped:
             index += 1
             continue
         return Pipeline(commands=tuple(commands)), index

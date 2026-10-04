@@ -323,3 +323,11 @@ def test_run_line_resolves_question_mark_in_a_host_call(shell_home: Path) -> Non
 
     assert result.host_call is not None
     assert result.host_call.argv == ("vim", "1")
+
+
+def test_run_line_skips_an_empty_command_inside_a_list(session: ShellSession) -> None:
+    """Check that an unset variable between operators runs nothing and resets the status"""
+    result = session.run_line("false; $UNSET_VARIABLE; echo $?")
+
+    assert result.stdout == "0\n"
+    assert result.stderr == ""

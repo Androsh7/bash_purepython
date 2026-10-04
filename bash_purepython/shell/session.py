@@ -270,6 +270,8 @@ class ShellSession:
         stderr_parts: list[bytes] = []
         exit_code = EXIT_CODE_SUCCESS
         last_position = len(pipeline.commands) - 1
+        if not pipeline.commands:
+            return b"", b"", EXIT_CODE_SUCCESS
         for position, command in enumerate(pipeline.commands):
             stdin = make_stdin(stdin_data)
             stdin_data = b""

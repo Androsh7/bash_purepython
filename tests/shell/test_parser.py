@@ -65,10 +65,17 @@ def test_parse_attaches_redirects_to_their_command(line: str, expected: Redirect
     assert command.argv == ("echo", "a")
 
 
+def test_parse_keeps_an_empty_command_as_an_empty_pipeline() -> None:
+    """Check that a list may hold a command that expanded to no words"""
+    command_list = parse_line("a ; ; b")
+
+    assert [len(pipeline.commands) for pipeline in command_list.pipelines] == [1, 0, 1]
+
+
 @pytest.mark.parametrize(
     "line",
-    ["| a", "a |", "a &&", "a > ", "a > | b", "a ; ; b"],
-    ids=["leading-pipe", "trailing-pipe", "trailing-and", "missing-target", "operator-as-target", "empty-command"],
+    ["| a", "a |", "a &&", "a > ", "a > | b", "> out"],
+    ids=["leading-pipe", "trailing-pipe", "trailing-and", "missing-target", "operator-as-target", "redirect-only"],
 )
 def test_parse_raises_on_misplaced_operators(line: str) -> None:
     """Check that an operator without a command on each side is a syntax error"""
