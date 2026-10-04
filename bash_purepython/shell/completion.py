@@ -17,7 +17,7 @@ from bash_purepython.shell.tokenizer import (
     expand_variables,
 )
 
-UNQUOTED_SPECIAL_CHARACTERS = set(" \t\"'\\>$|;&")
+UNQUOTED_SPECIAL_CHARACTERS = set(" \t\"'\\><$|;&")
 DOUBLE_QUOTED_SPECIAL_CHARACTERS = set('"\\$')
 OPTION_NAME = re.compile(r"(?<![\w-])(--?[A-Za-z0-9][\w-]*)")
 OPTIONS_SECTION_HEADINGS = ("options:", "optional arguments:")
@@ -58,13 +58,17 @@ def scan_partial_word(line: str, cursor: int) -> PartialWord:
             if character in WHITESPACE:
                 index += 1
                 continue
+            if character == "&" and line[index + 1 : index + 2] == ">":
+                index += 2
+                after_redirect = True
+                continue
             if character in "|&;":
                 index += 2 if line[index : index + 2] in ("||", "&&") else 1
                 word_count = 0
                 after_redirect = False
                 command_name = None
                 continue
-            if character == ">":
+            if character in "><":
                 index += 2 if line[index + 1 : index + 2] == ">" else 1
                 after_redirect = True
                 continue

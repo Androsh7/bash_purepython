@@ -29,7 +29,7 @@ shell:
   help                   show this message
 
 pipes and lists:  cmd | cmd    a && b    a || b    a ; b
-redirection:      cmd > file   cmd >> file
+redirection:      cmd > file   cmd >> file   cmd 2> file   cmd 2>&1   cmd &> file   cmd < file
 """
 
 

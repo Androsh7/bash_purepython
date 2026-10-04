@@ -221,12 +221,12 @@ def test_run_line_treats_a_line_that_expands_to_nothing_as_a_no_op(session: Shel
     assert result.stderr == ""
 
 
-def test_run_line_names_unsupported_stderr_redirection(session: ShellSession) -> None:
-    """Check that 2> is refused with a message about stderr rather than a wrong command"""
-    result = session.run_line("ls 2>/dev/null")
+def test_run_line_names_unsupported_descriptor_redirection(session: ShellSession) -> None:
+    """Check that an unsupported descriptor form is refused by name rather than run as a command"""
+    result = session.run_line("ls 3>out")
 
     assert result.exit_code == 2
-    assert "stderr redirection" in result.stderr
+    assert "file descriptor 3" in result.stderr
 
 
 def test_run_line_streams_output_to_the_sink_as_it_is_written(shell_home: Path) -> None:
@@ -414,3 +414,70 @@ def test_run_line_resolves_a_variable_in_a_host_call(shell_home: Path) -> None:
 
     assert result.host_call is not None
     assert result.host_call.argv == ("vim", "a.txt")
+
+
+def test_run_line_sends_stderr_to_its_file(session: ShellSession, shell_home: Path) -> None:
+    """Check that 2> keeps the error off the screen and in the file"""
+    result = session.run_line("cat missing.txt 2>err.txt")
+
+    assert result.stderr == ""
+    assert "missing.txt" in (shell_home / "err.txt").read_text()
+    assert result.exit_code == 1
+
+
+def test_run_line_appends_stderr_with_double_arrow(session: ShellSession, shell_home: Path) -> None:
+    """Check that 2>> adds to the file instead of replacing it"""
+    session.run_line("cat one.txt 2>err.txt")
+
+    session.run_line("cat two.txt 2>>err.txt")
+
+    text = (shell_home / "err.txt").read_text()
+    assert "one.txt" in text
+    assert "two.txt" in text
+
+
+def test_run_line_joins_stderr_into_the_pipe(session: ShellSession) -> None:
+    """Check that 2>&1 lets the next stage see the error text"""
+    result = session.run_line("cat missing.txt 2>&1 | grep -c missing")
+
+    assert result.stdout.strip() == "1"
+    assert result.stderr == ""
+
+
+def test_run_line_sends_both_streams_to_one_file(session: ShellSession, shell_home: Path) -> None:
+    """Check that &> writes stdout and stderr into the same file"""
+    session.run_line("echo fine; cat missing.txt &>all.txt")
+
+    text = (shell_home / "all.txt").read_text()
+    assert "missing.txt" in text
+
+
+def test_run_line_reads_stdin_from_a_file(session: ShellSession, shell_home: Path) -> None:
+    """Check that < feeds a file to a command that reads standard input"""
+    (shell_home / "in.txt").write_bytes(b"abc\n")
+
+    result = session.run_line("tr a-z A-Z <in.txt")
+
+    assert result.stdout == "ABC\n"
+
+
+def test_run_line_does_not_run_a_command_whose_input_is_missing(session: ShellSession, shell_home: Path) -> None:
+    """Check that a missing input file is reported and the command is skipped"""
+    (shell_home / "keep.txt").write_text("x")
+
+    result = session.run_line("rm keep.txt <nothing.txt")
+
+    assert result.exit_code == 1
+    assert "nothing.txt" in result.stderr
+    assert (shell_home / "keep.txt").exists()
+
+
+def test_run_line_refuses_extra_redirects_on_a_host_command(shell_home: Path) -> None:
+    """Check that a browser command may only redirect stdout"""
+    session = ShellSession(home=str(shell_home), host_commands=(HostCommand("vim", ""),), environment={})
+
+    result = session.run_line("vim a.txt 2>err.txt")
+
+    assert result.exit_code == 2
+    assert "browser commands" in result.stderr
+    assert result.host_call is None

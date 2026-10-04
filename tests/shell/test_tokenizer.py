@@ -120,18 +120,32 @@ def test_tokenize_raises_on_invalid_syntax(line: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("ls 2>err", ["ls", "2>", "err"]),
+        ("ls 2>>err", ["ls", "2>>", "err"]),
+        ("ls 2>&1", ["ls", "2>&1"]),
+        ("ls &>all", ["ls", "&>", "all"]),
+        ("cat <in", ["cat", "<", "in"]),
+        ("ls 2 > out", ["ls", "2", ">", "out"]),
+    ],
+    ids=["stderr-write", "stderr-append", "stderr-to-stdout", "both", "input", "spaced-digit-is-a-word"],
+)
+def test_tokenize_recognises_stderr_and_input_redirection(line: str, expected: list[str | None]) -> None:
+    """Check that the stderr and input forms are operators, and a digit with a space after it is not"""
+    assert expand_line(line) == expected
+
+
+@pytest.mark.parametrize(
     ("line", "expected_message"),
     [
-        ("ls 2>/dev/null", "stderr redirection"),
-        ("ls 2>&1 | wc -l", "stderr redirection"),
-        ("ls &>out", "stderr redirection"),
-        ("ls >&2", "stderr redirection"),
         ("ls 3>out", "file descriptor 3"),
-        ("cat < f", "input redirection"),
+        ("ls >&2", "stdout to descriptor"),
+        ("ls 2>&3", "stderr to descriptor"),
     ],
-    ids=["descriptor", "merge", "both", "to-descriptor", "other-descriptor", "input"],
+    ids=["other-descriptor", "stdout-to-descriptor", "stderr-to-other"],
 )
-def test_tokenize_rejects_unsupported_redirection_by_name(line: str, expected_message: str) -> None:
-    """Check that every unsupported redirection form is refused with a message that names it"""
+def test_tokenize_rejects_descriptor_redirection_by_name(line: str, expected_message: str) -> None:
+    """Check that descriptor forms the shell cannot honour are refused with a message that names them"""
     with pytest.raises(ShellSyntaxError, match=expected_message):
         tokenize(line)

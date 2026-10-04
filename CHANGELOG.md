@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   straight to the file, and a `KeyboardInterrupt` raised in a command exits 130
 - `$?` is resolved per pipeline, so `false; echo $?` prints 1 on the same line
 - `cd -` returns to the previous directory and fails when there is none
-- `2>`, `2>&1`, `>&`, `&>`, `<` and other descriptor forms are refused with a message naming them; `1>` is plain stdout
+- stderr and input redirection: `2> file`, `2>> file`, `2>&1`, `&> file` and `< file`; `1>` is plain stdout, and
+  descriptor forms the shell cannot honour (`3>`, `>&2`, `2>&3`) are refused with a message naming them
 - Variables expand per pipeline, so `export FOO=bar; echo $FOO` and `cd sub; echo $PWD` work on one line
 - Ctrl-C aborts the whole line, not just the command it landed in
 - Tab completion takes the cursor in UTF-16 units, as a browser host sends it, so emoji on the line no longer break it

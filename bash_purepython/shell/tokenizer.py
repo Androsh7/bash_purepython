@@ -78,6 +78,28 @@ def expand_word(word: RawWord, environment: Mapping[str, str], home: str, last_e
     return expand_tilde(expanded, home) if word.bare_tilde else expanded
 
 
+def read_stderr_redirect(line: str, index: int) -> tuple[Token, int]:
+    """Return the stderr redirect token starting at the > after a 2, and the index past it
+
+    Args:
+        line: The whole command line
+        index: The position of the > that follows the descriptor
+
+    Raises:
+        ShellSyntaxError: If stderr is sent to a descriptor other than 1
+
+    Returns:
+        The operator token and the position after it
+    """
+    if line.startswith(">&1", index):
+        return Token(TokenKind.REDIRECT_STDERR_TO_STDOUT, "2>&1"), index + 3
+    if line.startswith(">&", index):
+        raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="stderr to descriptor", form="2>&"))
+    if line.startswith(">>", index):
+        return Token(TokenKind.REDIRECT_STDERR_APPEND, "2>>"), index + 2
+    return Token(TokenKind.REDIRECT_STDERR_WRITE, "2>"), index + 1
+
+
 def read_operator(line: str, index: int) -> tuple[Token, int]:
     """Return the operator token starting at index and the index just past it
 
@@ -87,7 +109,7 @@ def read_operator(line: str, index: int) -> tuple[Token, int]:
 
     Raises:
         ShellSyntaxError: If a lone & is found, since background jobs are not supported, or
-            the operator is a form of redirection other than > and >>
+            stdout is sent to a descriptor
 
     Returns:
         The operator token and the position after it
@@ -102,14 +124,14 @@ def read_operator(line: str, index: int) -> tuple[Token, int]:
         if following == "&":
             return Token(TokenKind.AND, "&&"), index + 2
         if following == ">":
-            raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="stderr", form="&>"))
+            return Token(TokenKind.REDIRECT_BOTH, "&>"), index + 2
         raise ShellSyntaxError("background jobs are not supported")
     if character == ";":
         return Token(TokenKind.SEMICOLON, ";"), index + 1
     if character == "<":
-        raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="input", form="<"))
+        return Token(TokenKind.REDIRECT_INPUT, "<"), index + 1
     if following == "&":
-        raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="stderr", form=">&"))
+        raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="stdout to descriptor", form=">&"))
     if following == ">":
         return Token(TokenKind.REDIRECT_APPEND, ">>"), index + 2
     return Token(TokenKind.REDIRECT_WRITE, ">"), index + 1
@@ -192,8 +214,8 @@ def tokenize(line: str) -> list[Token]:
         line: The command line as typed
 
     Raises:
-        ShellSyntaxError: If a quote is left open, a lone & appears, or an unsupported
-            redirection form is used
+        ShellSyntaxError: If a quote is left open, a lone & appears, or a descriptor other
+            than 1 and 2 is redirected
 
     Returns:
         The tokens in order
@@ -215,7 +237,12 @@ def tokenize(line: str) -> list[Token]:
         if raw.isdigit() and index < len(line) and line[index] == ">":
             if raw == STDOUT_DESCRIPTOR:
                 continue
-            what = "stderr" if raw == STDERR_DESCRIPTOR else f"file descriptor {raw}"
-            raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what=what, form=f"{raw}>"))
+            if raw == STDERR_DESCRIPTOR:
+                token, index = read_stderr_redirect(line, index)
+                tokens.append(token)
+                continue
+            raise ShellSyntaxError(
+                UNSUPPORTED_REDIRECTION_MESSAGE.format(what=f"file descriptor {raw}", form=f"{raw}>")
+            )
         tokens.append(Token(TokenKind.WORD, raw, word))
     return tokens

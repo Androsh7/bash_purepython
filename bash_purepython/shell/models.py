@@ -25,6 +25,11 @@ class TokenKind(StrEnum):
     SEMICOLON = ";"
     REDIRECT_WRITE = ">"
     REDIRECT_APPEND = ">>"
+    REDIRECT_STDERR_WRITE = "2>"
+    REDIRECT_STDERR_APPEND = "2>>"
+    REDIRECT_STDERR_TO_STDOUT = "2>&1"
+    REDIRECT_BOTH = "&>"
+    REDIRECT_INPUT = "<"
 
 
 class ChainOperator(StrEnum):
@@ -132,12 +137,23 @@ class Token:
 
 
 @dataclass(frozen=True, slots=True)
+class RawRedirects:
+    """Hold where a command's streams go, before the targets are expanded"""
+
+    stdout_target: RawWord | None = None
+    stdout_append: bool = False
+    stderr_target: RawWord | None = None
+    stderr_append: bool = False
+    stderr_to_stdout: bool = False
+    stdin_source: RawWord | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RawCommand:
-    """Hold one command before expansion, its words and its redirect target"""
+    """Hold one command before expansion, its words and its redirects"""
 
     words: tuple[RawWord, ...]
-    redirect_target: RawWord | None
-    append: bool
+    redirects: RawRedirects
 
     def __post_init__(self):
         """Reject a command without words
@@ -175,10 +191,17 @@ class Redirect:
 
 @dataclass(frozen=True, slots=True)
 class SimpleCommand:
-    """Hold one command, its arguments and its redirect"""
+    """Hold one command, its arguments and its redirects
+
+    redirect is where stdout goes; stderr_redirect is where stderr goes unless
+    stderr_to_stdout joins it to stdout; stdin_path is a file read as input
+    """
 
     argv: tuple[str, ...]
     redirect: Redirect | None = None
+    stderr_redirect: Redirect | None = None
+    stderr_to_stdout: bool = False
+    stdin_path: str | None = None
 
     def __post_init__(self):
         """Reject a command without a name

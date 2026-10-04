@@ -76,14 +76,36 @@ def test_parse_attaches_redirects_to_their_command(line: str, expected: tuple[st
     command_list = parse_line(line)
 
     command = command_list.pipelines[0].commands[0]
-    assert command.redirect_target is not None
-    assert (expand_word(command.redirect_target, {}, HOME, 0), command.append) == expected
+    assert command.redirects.stdout_target is not None
+    assert (expand_word(command.redirects.stdout_target, {}, HOME, 0), command.redirects.stdout_append) == expected
     assert argv_of(command) == ["echo", "a"]
+
+
+def test_parse_keeps_every_kind_of_redirect_on_the_command() -> None:
+    """Check that stdout, stderr and stdin redirects are all recorded"""
+    command_list = parse_line("cmd <in >out 2>>err")
+
+    redirects = command_list.pipelines[0].commands[0].redirects
+    assert expand_word(redirects.stdin_source, {}, HOME, 0) == "in"
+    assert expand_word(redirects.stdout_target, {}, HOME, 0) == "out"
+    assert expand_word(redirects.stderr_target, {}, HOME, 0) == "err"
+    assert redirects.stderr_append
+    assert not redirects.stderr_to_stdout
+
+
+def test_parse_joins_stderr_to_stdout_for_both_forms() -> None:
+    """Check that 2>&1 and &> both mark stderr as joined to stdout"""
+    merged = parse_line("cmd >out 2>&1").pipelines[0].commands[0].redirects
+    both = parse_line("cmd &>all").pipelines[0].commands[0].redirects
+
+    assert merged.stderr_to_stdout
+    assert both.stderr_to_stdout
+    assert expand_word(both.stdout_target, {}, HOME, 0) == "all"
 
 
 @pytest.mark.parametrize(
     "line",
-    ["| a", "a |", "a &&", "a > ", "a > | b", "a ; ; b", "false ;; echo", "a || || b", "> out"],
+    ["| a", "a |", "a &&", "a > ", "a > | b", "a ; ; b", "false ;; echo", "a || || b", "> out", "a 2>", "a <"],
     ids=[
         "leading-pipe",
         "trailing-pipe",
@@ -94,6 +116,8 @@ def test_parse_attaches_redirects_to_their_command(line: str, expected: tuple[st
         "double-semicolon",
         "double-or",
         "redirect-only",
+        "stderr-without-target",
+        "input-without-source",
     ],
 )
 def test_parse_raises_on_misplaced_operators(line: str) -> None:

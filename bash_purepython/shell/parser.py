@@ -6,6 +6,7 @@ from bash_purepython.shell.models import (
     CommandList,
     RawCommand,
     RawPipeline,
+    RawRedirects,
     RawWord,
     ShellSyntaxError,
     Token,
@@ -17,7 +18,89 @@ CHAIN_OPERATORS = {
     TokenKind.OR: ChainOperator.OR,
     TokenKind.SEMICOLON: ChainOperator.SEMICOLON,
 }
-REDIRECT_KINDS = {TokenKind.REDIRECT_WRITE, TokenKind.REDIRECT_APPEND}
+REDIRECTS_WITH_TARGET = {
+    TokenKind.REDIRECT_WRITE,
+    TokenKind.REDIRECT_APPEND,
+    TokenKind.REDIRECT_STDERR_WRITE,
+    TokenKind.REDIRECT_STDERR_APPEND,
+    TokenKind.REDIRECT_BOTH,
+    TokenKind.REDIRECT_INPUT,
+}
+
+
+def apply_redirect(redirects: RawRedirects, kind: TokenKind, target: RawWord | None) -> RawRedirects:
+    """Return the redirects with one more operator applied, the last of a kind winning
+
+    Args:
+        redirects: The redirects gathered so far
+        kind: The redirect operator
+        target: The word after it, or None for 2>&1
+
+    Returns:
+        The updated redirects
+    """
+    if kind == TokenKind.REDIRECT_WRITE:
+        return RawRedirects(
+            stdout_target=target,
+            stdout_append=False,
+            stderr_target=redirects.stderr_target,
+            stderr_append=redirects.stderr_append,
+            stderr_to_stdout=redirects.stderr_to_stdout,
+            stdin_source=redirects.stdin_source,
+        )
+    if kind == TokenKind.REDIRECT_APPEND:
+        return RawRedirects(
+            stdout_target=target,
+            stdout_append=True,
+            stderr_target=redirects.stderr_target,
+            stderr_append=redirects.stderr_append,
+            stderr_to_stdout=redirects.stderr_to_stdout,
+            stdin_source=redirects.stdin_source,
+        )
+    if kind == TokenKind.REDIRECT_STDERR_WRITE:
+        return RawRedirects(
+            stdout_target=redirects.stdout_target,
+            stdout_append=redirects.stdout_append,
+            stderr_target=target,
+            stderr_append=False,
+            stderr_to_stdout=False,
+            stdin_source=redirects.stdin_source,
+        )
+    if kind == TokenKind.REDIRECT_STDERR_APPEND:
+        return RawRedirects(
+            stdout_target=redirects.stdout_target,
+            stdout_append=redirects.stdout_append,
+            stderr_target=target,
+            stderr_append=True,
+            stderr_to_stdout=False,
+            stdin_source=redirects.stdin_source,
+        )
+    if kind == TokenKind.REDIRECT_STDERR_TO_STDOUT:
+        return RawRedirects(
+            stdout_target=redirects.stdout_target,
+            stdout_append=redirects.stdout_append,
+            stderr_target=None,
+            stderr_append=False,
+            stderr_to_stdout=True,
+            stdin_source=redirects.stdin_source,
+        )
+    if kind == TokenKind.REDIRECT_BOTH:
+        return RawRedirects(
+            stdout_target=target,
+            stdout_append=False,
+            stderr_target=None,
+            stderr_append=False,
+            stderr_to_stdout=True,
+            stdin_source=redirects.stdin_source,
+        )
+    return RawRedirects(
+        stdout_target=redirects.stdout_target,
+        stdout_append=redirects.stdout_append,
+        stderr_target=redirects.stderr_target,
+        stderr_append=redirects.stderr_append,
+        stderr_to_stdout=redirects.stderr_to_stdout,
+        stdin_source=target,
+    )
 
 
 def parse_simple_command(tokens: list[Token], index: int) -> tuple[RawCommand, int]:
@@ -34,26 +117,28 @@ def parse_simple_command(tokens: list[Token], index: int) -> tuple[RawCommand, i
         The command and the position of the next operator or the end
     """
     words: list[RawWord] = []
-    redirect_target = None
-    append = False
+    redirects = RawRedirects()
     while index < len(tokens):
         token = tokens[index]
         if token.kind == TokenKind.WORD and token.word is not None:
             words.append(token.word)
             index += 1
             continue
-        if token.kind in REDIRECT_KINDS:
+        if token.kind == TokenKind.REDIRECT_STDERR_TO_STDOUT:
+            redirects = apply_redirect(redirects, token.kind, None)
+            index += 1
+            continue
+        if token.kind in REDIRECTS_WITH_TARGET:
             if index + 1 >= len(tokens) or tokens[index + 1].word is None:
-                raise ShellSyntaxError("syntax error: missing redirect target")
-            redirect_target = tokens[index + 1].word
-            append = token.kind == TokenKind.REDIRECT_APPEND
+                raise ShellSyntaxError(f"syntax error: missing target after {token.value}")
+            redirects = apply_redirect(redirects, token.kind, tokens[index + 1].word)
             index += 2
             continue
         break
     if not words:
         unexpected = tokens[index].value if index < len(tokens) else "newline"
         raise ShellSyntaxError(f"syntax error near unexpected token '{unexpected}'")
-    return RawCommand(words=tuple(words), redirect_target=redirect_target, append=append), index
+    return RawCommand(words=tuple(words), redirects=redirects), index
 
 
 def parse_pipeline(tokens: list[Token], index: int) -> tuple[RawPipeline, int]:

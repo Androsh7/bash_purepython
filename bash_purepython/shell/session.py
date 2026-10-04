@@ -3,6 +3,7 @@
 # Standard libraries
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -29,6 +30,7 @@ from bash_purepython.shell.models import (
     HostCommandPlacementError,
     Pipeline,
     RawPipeline,
+    RawWord,
     Redirect,
     RunResult,
     ShellSyntaxError,
@@ -50,6 +52,20 @@ from bash_purepython.shell.tokenizer import expand_word, tokenize
 
 SHELL_NAME = "ash7"
 SHELL_STATE_VARIABLES = frozenset({"PWD", "OLDPWD"})
+HOST_REDIRECT_MESSAGE = "{name}: browser commands support only > and >>"
+
+
+@dataclass(frozen=True, slots=True)
+class StageStreams:
+    """Hold the streams one pipeline stage runs with, and the files to close afterwards"""
+
+    stdin: TextIO
+    stdout: TextIO
+    stderr: TextIO
+    stdout_capture: OutputCapture | None
+    stderr_capture: OutputCapture | None
+    files: tuple[TextIO, ...]
+    failure: str | None
 
 
 class ShellSession:
@@ -174,15 +190,42 @@ class ShellSession:
                 for expanded in (expand_word(word, os.environ, self.home, exit_code) for word in raw_command.words)
                 if expanded is not None
             ]
-            redirect = None
-            if raw_command.redirect_target is not None:
-                target = expand_word(raw_command.redirect_target, os.environ, self.home, exit_code)
-                if target is None:
-                    raise ShellSyntaxError("ambiguous redirect")
-                redirect = Redirect(target=target, append=raw_command.append)
+            redirects = raw_command.redirects
+            stdout_target = self._expand_target(redirects.stdout_target, exit_code)
+            stderr_target = self._expand_target(redirects.stderr_target, exit_code)
             if argv:
-                commands.append(SimpleCommand(argv=tuple(argv), redirect=redirect))
+                commands.append(
+                    SimpleCommand(
+                        argv=tuple(argv),
+                        redirect=None if stdout_target is None else Redirect(stdout_target, redirects.stdout_append),
+                        stderr_redirect=None
+                        if stderr_target is None
+                        else Redirect(stderr_target, redirects.stderr_append),
+                        stderr_to_stdout=redirects.stderr_to_stdout,
+                        stdin_path=self._expand_target(redirects.stdin_source, exit_code),
+                    )
+                )
         return Pipeline(commands=tuple(commands))
+
+    def _expand_target(self, word: RawWord | None, exit_code: int) -> str | None:
+        """Expand a redirect target, which must come out as exactly one word
+
+        Args:
+            word: The target as parsed, or None when there is no such redirect
+            exit_code: The value $? expands to
+
+        Raises:
+            ShellSyntaxError: If the target expands to nothing
+
+        Returns:
+            The path, or None when there is no redirect
+        """
+        if word is None:
+            return None
+        target = expand_word(word, os.environ, self.home, exit_code)
+        if target is None:
+            raise ShellSyntaxError("ambiguous redirect")
+        return target
 
     def run_line(self, line: str, columns: int | None = None) -> RunResult:
         """Run one command line and return everything it produced
@@ -251,6 +294,8 @@ class ShellSession:
         if len(resolved) == 1 and len(resolved[0].commands) == 1:
             only_command = resolved[0].commands[0]
             if only_command.name in host_names:
+                if only_command.stderr_redirect or only_command.stderr_to_stdout or only_command.stdin_path:
+                    raise ShellSyntaxError(HOST_REDIRECT_MESSAGE.format(name=only_command.name))
                 return HostCall(name=only_command.name, argv=only_command.argv, redirect=only_command.redirect)
         for pipeline in resolved:
             for command in pipeline.commands:
@@ -338,53 +383,124 @@ class ShellSession:
         exit_code = EXIT_CODE_SUCCESS
         last_position = len(pipeline.commands) - 1
         for position, command in enumerate(pipeline.commands):
-            stdin = make_stdin(stdin_data)
+            streams = self._open_stage_streams(command, stdin_data, position == last_position)
             stdin_data = b""
-            stderr_capture = None if self.output_sink else OutputCapture(OUTPUT_LIMIT_BYTES)
-            stderr = make_sink_stream(self.output_sink, STDERR_KIND) if self.output_sink else stderr_capture.stream
-            stdout_capture = None
-            redirect_stream = None
-            if command.redirect is not None:
-                redirect_stream = open_redirect(command.redirect)
-                if redirect_stream is None:
-                    stderr.write(f"{SHELL_NAME}: {command.redirect.target}: cannot open for writing\n")
-                    stderr.flush()
-                    exit_code = EXIT_CODE_FAILURE
-                    if stderr_capture is not None:
-                        stderr_parts.append(stderr_capture.getvalue())
-                    continue
-                stdout = redirect_stream
-            elif position == last_position and self.output_sink is not None:
-                stdout = make_sink_stream(self.output_sink, STDOUT_KIND)
-            else:
-                stdout_capture = OutputCapture(OUTPUT_LIMIT_BYTES)
-                stdout = stdout_capture.stream
-            try:
-                exit_code = self._run_simple_command(command, stdin, stdout, stderr)
-            finally:
-                stdout.flush()
-                stderr.flush()
-                if redirect_stream is not None:
-                    redirect_stream.close()
-            if stdout_capture is not None and stdout_capture.overflowed:
-                stderr.write(f"{SHELL_NAME}: {command.name}: output exceeded {OUTPUT_LIMIT_BYTES} bytes\n")
+            if streams.failure is not None:
+                streams.stderr.write(f"{SHELL_NAME}: {streams.failure}\n")
+                streams.stderr.flush()
                 exit_code = EXIT_CODE_FAILURE
-            if stderr_capture is not None:
-                stderr_parts.append(stderr_capture.getvalue())
-                if stderr_capture.overflowed:
+                if streams.stderr_capture is not None:
+                    stderr_parts.append(streams.stderr_capture.getvalue())
+                continue
+            try:
+                exit_code = self._run_simple_command(command, streams.stdin, streams.stdout, streams.stderr)
+            finally:
+                streams.stdout.flush()
+                streams.stderr.flush()
+                for opened in streams.files:
+                    opened.close()
+            if streams.stdout_capture is not None and streams.stdout_capture.overflowed:
+                streams.stderr.write(f"{SHELL_NAME}: {command.name}: output exceeded {OUTPUT_LIMIT_BYTES} bytes\n")
+                exit_code = EXIT_CODE_FAILURE
+            if streams.stderr_capture is not None:
+                stderr_parts.append(streams.stderr_capture.getvalue())
+                if streams.stderr_capture.overflowed:
                     stderr_parts.append(
                         f"\n{SHELL_NAME}: {command.name}: error output exceeded {OUTPUT_LIMIT_BYTES} bytes\n".encode(
                             STREAM_ENCODING
                         )
                     )
                     exit_code = EXIT_CODE_FAILURE
-            if stdout_capture is None or command.redirect is not None:
+            if streams.stdout_capture is None or command.redirect is not None:
                 continue
             if position == last_position:
-                stdout_parts.append(stdout_capture.getvalue())
+                stdout_parts.append(streams.stdout_capture.getvalue())
             else:
-                stdin_data = stdout_capture.getvalue()
+                stdin_data = streams.stdout_capture.getvalue()
         return b"".join(stdout_parts), b"".join(stderr_parts), exit_code
+
+    def _open_stage_streams(self, command: SimpleCommand, stdin_data: bytes, is_last: bool) -> StageStreams:
+        """Bind one stage's stdin, stdout and stderr according to its redirects
+
+        stdout goes to its file, to the sink for the last stage, or to a capture that
+        feeds the next stage. stderr goes to its file, joins stdout for 2>&1, or goes
+        to the sink or a capture. stdin comes from its file or from the previous stage
+
+        Args:
+            command: The command whose redirects decide the streams
+            stdin_data: What the previous stage produced
+            is_last: Whether this is the last stage of the pipeline
+
+        Returns:
+            The streams, or a failure message when a redirect target cannot be opened
+        """
+        files: list[TextIO] = []
+        stdout_capture = None
+        stderr_capture = None
+        if command.redirect is not None:
+            opened = open_redirect(command.redirect)
+            if opened is None:
+                return self._failed_streams(f"{command.redirect.target}: cannot open for writing")
+            files.append(opened)
+            stdout = opened
+        elif is_last and self.output_sink is not None:
+            stdout = make_sink_stream(self.output_sink, STDOUT_KIND)
+        else:
+            stdout_capture = OutputCapture(OUTPUT_LIMIT_BYTES)
+            stdout = stdout_capture.stream
+        if command.stderr_redirect is not None:
+            opened = open_redirect(command.stderr_redirect)
+            if opened is None:
+                close_all(files)
+                return self._failed_streams(f"{command.stderr_redirect.target}: cannot open for writing")
+            files.append(opened)
+            stderr = opened
+        elif command.stderr_to_stdout:
+            stderr = stdout
+        elif self.output_sink is not None:
+            stderr = make_sink_stream(self.output_sink, STDERR_KIND)
+        else:
+            stderr_capture = OutputCapture(OUTPUT_LIMIT_BYTES)
+            stderr = stderr_capture.stream
+        if command.stdin_path is not None:
+            opened = open_input(command.stdin_path)
+            if opened is None:
+                close_all(files)
+                return self._failed_streams(f"{command.stdin_path}: cannot open for reading")
+            files.append(opened)
+            stdin = opened
+        else:
+            stdin = make_stdin(stdin_data)
+        return StageStreams(
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            stdout_capture=stdout_capture,
+            stderr_capture=stderr_capture,
+            files=tuple(files),
+            failure=None,
+        )
+
+    def _failed_streams(self, failure: str) -> StageStreams:
+        """Return streams that only carry a redirect failure to the normal stderr
+
+        Args:
+            failure: The message to report
+
+        Returns:
+            Streams whose stderr is the sink or a capture, with the failure set
+        """
+        stderr_capture = None if self.output_sink else OutputCapture(OUTPUT_LIMIT_BYTES)
+        stderr = make_sink_stream(self.output_sink, STDERR_KIND) if self.output_sink else stderr_capture.stream
+        return StageStreams(
+            stdin=make_stdin(b""),
+            stdout=stderr,
+            stderr=stderr,
+            stdout_capture=None,
+            stderr_capture=stderr_capture,
+            files=(),
+            failure=failure,
+        )
 
     def _run_simple_command(self, command: SimpleCommand, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
         """Run one builtin or package command on the given streams
@@ -423,6 +539,32 @@ def should_run_after(operator: ChainOperator, previous_exit_code: int) -> bool:
     if operator == ChainOperator.OR:
         return previous_exit_code != EXIT_CODE_SUCCESS
     return True
+
+
+def close_all(files: Sequence[TextIO]) -> None:
+    """Close every file opened for a stage that will not run after all
+
+    Args:
+        files: The streams to close
+    """
+    for opened in files:
+        opened.close()
+
+
+def open_input(path: str) -> TextIO | None:
+    """Open a file as a command's standard input
+
+    Args:
+        path: The file to read, relative to the working directory
+
+    Returns:
+        A readable text stream with a byte buffer, or None if the file cannot be opened
+    """
+    try:
+        raw = Path(path).open("rb")  # noqa: SIM115
+    except OSError:
+        return None
+    return wrap_binary(raw)
 
 
 def open_redirect(redirect: Redirect) -> TextIO | None:
