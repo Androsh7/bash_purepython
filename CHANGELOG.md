@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `2>`, `2>&1`, `>&` and `&>` are refused with a message naming stderr redirection
 - Behavioural tests for the shell under `tests/shell`
 
+- `ls -h` (`--human-readable`) prints sizes like 1.5K and 12M in a long listing; help is `--help`
+
 ### Changed
 
 - Ruff targets Python 3.11 and the publish workflow builds on 3.11, matching
@@ -37,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `print_error` and `print_warning` wrote to stdout, so an error from one
   command in a pipeline was fed to the next; they now write to stderr
 - `help` listed subpackages as if they were commands
+- `ls -r` used a Python 3.13-only argument, so it failed on 3.11 and 3.12
 - `yes` swallowed a `KeyboardInterrupt` and exited 0; it now exits 130 like the real one
 - The wheel only packaged the top-level package, so subpackages were left out
 - Inside double quotes a backslash escaped every character; it now escapes only `$`,
