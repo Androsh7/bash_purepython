@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command in a pipeline was fed to the next; they now write to stderr
 - `help` listed subpackages as if they were commands
 - `ls -r` used a Python 3.13-only argument, so it failed on 3.11 and 3.12
+- `ls` given a file path tried to list it as a directory and failed
 - `yes` swallowed a `KeyboardInterrupt` and exited 0; it now exits 130 like the real one
 - A command whose redirect target could not be opened still ran; it is now skipped
 - Adjacent operators such as `;;` were silently accepted as a success; they are a syntax error

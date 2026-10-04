@@ -71,3 +71,14 @@ def test_ls_recursive_walks_directories(tmp_path: Path, monkeypatch: pytest.Monk
     output = run_command("ls", ["ls", "-r"], b"")
 
     assert "deep.txt" in output.stdout.decode()
+
+
+def test_ls_lists_a_file_given_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check that naming a file lists that file rather than failing to open it as a directory"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "one.txt").write_text("1")
+
+    output = run_command("ls", ["ls", "-l", "one.txt"], b"")
+
+    assert output.exit_code == 0
+    assert "one.txt" in output.stdout.decode()

@@ -25,7 +25,9 @@ def collect_files(path_list: list[Path], recursive: bool) -> list[Path]:
     """
     file_list: list[Path] = []
     for path in path_list:
-        if recursive:
+        if not path.is_dir():
+            file_list.append(path)
+        elif recursive:
             file_list.extend(path.rglob("*"))
         else:
             file_list.extend(file_path for file_path in path.iterdir())
