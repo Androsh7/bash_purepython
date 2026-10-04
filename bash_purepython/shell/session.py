@@ -64,7 +64,7 @@ class ShellSession:
         self._history = list(history)[-HISTORY_LIMIT_ENTRIES:]
         os.environ.update(environment)
         os.environ.setdefault("HOME", home)
-        os.environ.setdefault("PWD", str(Path.cwd()))
+        os.environ["PWD"] = str(Path.cwd())
 
     @property
     def history(self) -> tuple[str, ...]:
