@@ -24,7 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   straight to the file, and a `KeyboardInterrupt` raised in a command exits 130
 - `$?` is resolved per pipeline, so `false; echo $?` prints 1 on the same line
 - `cd -` returns to the previous directory and fails when there is none
-- `2>`, `2>&1`, `>&` and `&>` are refused with a message naming stderr redirection
+- `2>`, `2>&1`, `>&`, `&>`, `<` and other descriptor forms are refused with a message naming them; `1>` is plain stdout
+- Variables expand per pipeline, so `export FOO=bar; echo $FOO` and `cd sub; echo $PWD` work on one line
+- Ctrl-C aborts the whole line, not just the command it landed in
+- Tab completion takes the cursor in UTF-16 units, as a browser host sends it, so emoji on the line no longer break it
 - Behavioural tests for the shell under `tests/shell`
 
 - `ls -h` (`--human-readable`) prints sizes like 1.5K and 12M in a long listing; help is `--help`
@@ -41,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `help` listed subpackages as if they were commands
 - `ls -r` used a Python 3.13-only argument, so it failed on 3.11 and 3.12
 - `yes` swallowed a `KeyboardInterrupt` and exited 0; it now exits 130 like the real one
+- A command whose redirect target could not be opened still ran; it is now skipped
+- Adjacent operators such as `;;` were silently accepted as a success; they are a syntax error
+- An error stream that reached the limit was truncated silently with exit 0; it is now an error
+- `ls -h` rounds up and steps to the next unit the way GNU ls does, so 1048575 bytes is 1.0M
+- Completion inside double quotes dropped backslashes the shell keeps
 - The wheel only packaged the top-level package, so subpackages were left out
 - Inside double quotes a backslash escaped every character; it now escapes only `$`,
   `"`, `\` and backtick, so `grep "\.txt"` keeps its backslash

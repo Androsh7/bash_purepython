@@ -1,14 +1,16 @@
 """PurePython implementation of the bash ls command"""
 
 # Standard libraries
+import math
 from argparse import ArgumentParser
 from pathlib import Path
 
 # Project libraries
 from bash_purepython._color import print_error
 
-SIZE_UNITS = ("B", "K", "M", "G", "T", "P")
+SIZE_UNITS = ("K", "M", "G", "T", "P", "E")
 SIZE_UNIT_FACTOR = 1024
+SINGLE_DIGIT_LIMIT = 10
 
 
 def collect_files(path_list: list[Path], recursive: bool) -> list[Path]:
@@ -33,20 +35,28 @@ def collect_files(path_list: list[Path], recursive: bool) -> list[Path]:
 def format_size(size_bytes: int) -> str:
     """Return a byte count in the short form ls -lh uses, such as 4.0K or 12M
 
+    Values round up the way GNU ls does, with one decimal below ten, and a value
+    that rounds up to the next unit is shown in that unit
+
     Args:
         size_bytes: The size to format
 
     Returns:
-        The size with a one-letter unit, one decimal below ten
+        Plain bytes below one kilobyte, otherwise the size with a one-letter unit
     """
-    size = float(size_bytes)
+    if size_bytes < SIZE_UNIT_FACTOR:
+        return str(size_bytes)
+    value = size_bytes / SIZE_UNIT_FACTOR
     for unit in SIZE_UNITS:
-        if size < SIZE_UNIT_FACTOR or unit == SIZE_UNITS[-1]:
-            if unit == "B":
-                return f"{int(size)}"
-            return f"{size:.1f}{unit}" if size < 10 else f"{size:.0f}{unit}"
-        size /= SIZE_UNIT_FACTOR
-    return f"{int(size_bytes)}"
+        if value < SINGLE_DIGIT_LIMIT:
+            tenths = math.ceil(value * 10)
+            if tenths < SINGLE_DIGIT_LIMIT * 10:
+                return f"{tenths / 10:.1f}{unit}"
+        whole = math.ceil(value)
+        if whole < SIZE_UNIT_FACTOR or unit == SIZE_UNITS[-1]:
+            return f"{whole}{unit}"
+        value /= SIZE_UNIT_FACTOR
+    return f"{math.ceil(value)}{SIZE_UNITS[-1]}"
 
 
 def print_listing(file_list: list[Path], long: bool, human_readable: bool) -> None:

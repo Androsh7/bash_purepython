@@ -106,3 +106,21 @@ def test_set_output_sink_streams_the_next_lines(started_bridge: str, monkeypatch
     assert result["stdout"] == ""
     assert {kind for kind, _ in received} == {"stdout"}
     assert "".join(text for _, text in received) == "streamed\n"
+
+
+def test_complete_line_accepts_a_utf16_cursor_after_an_emoji(started_bridge: str, shell_home: Path) -> None:
+    """Check that a cursor counted the JavaScript way lands on the right word past an astral character"""
+    (shell_home / "notes.txt").write_text("")
+    line = "echo \U0001f600 no"
+
+    result = json.loads(bridge.complete_line(json.dumps({"line": line, "cursor": 10})))
+
+    assert result["replacement"] == "notes.txt "
+    assert result["word_start"] == 8
+
+
+def test_complete_line_clamps_a_cursor_past_the_end(started_bridge: str) -> None:
+    """Check that an oversized cursor does not raise"""
+    result = json.loads(bridge.complete_line(json.dumps({"line": "gre", "cursor": 99})))
+
+    assert result["replacement"] == "grep "

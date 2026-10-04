@@ -200,3 +200,10 @@ def test_complete_expands_a_variable_for_the_lookup_but_keeps_it_typed(session: 
     result = session.complete("cd $HOME/doc", 12)
 
     assert result.replacement == "$HOME/documents/"
+
+
+def test_scan_partial_word_keeps_a_backslash_the_tokenizer_keeps() -> None:
+    """Check that inside double quotes only the escapable characters lose their backslash"""
+    word = scan_partial_word('cat "a\\nb', 10)
+
+    assert word.value == "a\\nb"

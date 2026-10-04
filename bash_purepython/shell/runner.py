@@ -9,12 +9,7 @@ from typing import TextIO
 
 # Project libraries
 from bash_purepython.shell.commands import load_command_main
-from bash_purepython.shell.models import (
-    EXIT_CODE_FAILURE,
-    EXIT_CODE_INTERRUPTED,
-    EXIT_CODE_SUCCESS,
-    CommandOutput,
-)
+from bash_purepython.shell.models import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, CommandOutput
 from bash_purepython.shell.streams import STREAM_ENCODING, OutputCapture, make_stdin
 
 
@@ -39,9 +34,10 @@ def exit_code_from_system_exit(exit_request: SystemExit, stderr: TextIO) -> int:
 def run_command_on_streams(name: str, argv: Sequence[str], stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     """Run one package command with its standard streams bound to the ones given
 
-    A SystemExit becomes the exit code, a BrokenPipeError is a clean stop, a
-    KeyboardInterrupt exits 130, and any other exception becomes a one-line error
-    on stderr with exit code one
+    A SystemExit becomes the exit code, a BrokenPipeError is a clean stop, and any
+    other exception becomes a one-line error on stderr with exit code one. A
+    KeyboardInterrupt propagates after the streams are restored, so the caller can
+    abort everything else it meant to run
 
     Args:
         name: The command module to run
@@ -52,6 +48,7 @@ def run_command_on_streams(name: str, argv: Sequence[str], stdin: TextIO, stdout
 
     Raises:
         CommandNotFoundError: If the package has no such command
+        KeyboardInterrupt: If the command was interrupted
 
     Returns:
         The exit code
@@ -68,8 +65,6 @@ def run_command_on_streams(name: str, argv: Sequence[str], stdin: TextIO, stdout
         exit_code = exit_code_from_system_exit(exit_request, stderr)
     except BrokenPipeError:
         exit_code = EXIT_CODE_SUCCESS
-    except KeyboardInterrupt:
-        exit_code = EXIT_CODE_INTERRUPTED
     except Exception as error:
         stderr.write(f"{name}: {error}\n")
         exit_code = EXIT_CODE_FAILURE

@@ -13,7 +13,6 @@ EXIT_CODE_FAILURE = 1
 EXIT_CODE_SYNTAX_ERROR = 2
 EXIT_CODE_COMMAND_NOT_FOUND = 127
 EXIT_CODE_INTERRUPTED = 130
-LAST_EXIT_CODE_PLACEHOLDER = "\x00?"
 
 
 class TokenKind(StrEnum):
@@ -108,11 +107,62 @@ class OutputLimitExceededError(BrokenPipeError):
 
 
 @dataclass(frozen=True, slots=True)
+class WordPart:
+    """Hold a run of a word's text and whether quoting protects it from expansion"""
+
+    text: str
+    quoted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RawWord:
+    """Hold a word before expansion, as the runs the tokenizer split it into"""
+
+    parts: tuple[WordPart, ...]
+    bare_tilde: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Token:
     """Hold one word or operator from a command line"""
 
     kind: TokenKind
     value: str
+    word: RawWord | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RawCommand:
+    """Hold one command before expansion, its words and its redirect target"""
+
+    words: tuple[RawWord, ...]
+    redirect_target: RawWord | None
+    append: bool
+
+    def __post_init__(self):
+        """Reject a command without words
+
+        Raises:
+            ValueError: If there are no words
+        """
+        if not self.words:
+            raise ValueError("a command needs at least one word")
+
+
+@dataclass(frozen=True, slots=True)
+class RawPipeline:
+    """Hold the unexpanded commands joined by pipes"""
+
+    commands: tuple[RawCommand, ...]
+
+    def __post_init__(self):
+        """Reject an empty pipeline
+
+        Raises:
+            ValueError: If there are no commands
+        """
+        if not self.commands:
+            raise ValueError("a pipeline needs at least one command")
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,9 +204,9 @@ class Pipeline:
 
 @dataclass(frozen=True, slots=True)
 class CommandList:
-    """Hold the pipelines of a line and the operators between them"""
+    """Hold the unexpanded pipelines of a line and the operators between them"""
 
-    pipelines: tuple[Pipeline, ...]
+    pipelines: tuple[RawPipeline, ...]
     operators: tuple[ChainOperator, ...]
 
     def __post_init__(self):

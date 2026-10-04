@@ -18,7 +18,6 @@ from bash_purepython.shell.models import (
     EXIT_CODE_SUCCESS,
     EXIT_CODE_SYNTAX_ERROR,
     HISTORY_LIMIT_ENTRIES,
-    LAST_EXIT_CODE_PLACEHOLDER,
     OUTPUT_LIMIT_BYTES,
     ChainOperator,
     CommandKind,
@@ -29,6 +28,7 @@ from bash_purepython.shell.models import (
     HostCommand,
     HostCommandPlacementError,
     Pipeline,
+    RawPipeline,
     Redirect,
     RunResult,
     ShellSyntaxError,
@@ -46,7 +46,7 @@ from bash_purepython.shell.streams import (
     make_stdin,
     wrap_binary,
 )
-from bash_purepython.shell.tokenizer import tokenize
+from bash_purepython.shell.tokenizer import expand_word, tokenize
 
 SHELL_NAME = "ash7"
 SHELL_STATE_VARIABLES = frozenset({"PWD", "OLDPWD"})
@@ -154,6 +154,36 @@ class ShellSession:
         """
         self.last_exit_code = exit_code
 
+    def resolve_pipeline(self, raw_pipeline: RawPipeline, exit_code: int) -> Pipeline:
+        """Expand a pipeline's words against the environment as it is right now
+
+        Args:
+            raw_pipeline: The pipeline as parsed
+            exit_code: The value $? expands to
+
+        Raises:
+            ShellSyntaxError: If a redirect target expands to nothing
+
+        Returns:
+            The pipeline with plain argv, commands that expanded to nothing left out
+        """
+        commands: list[SimpleCommand] = []
+        for raw_command in raw_pipeline.commands:
+            argv = [
+                expanded
+                for expanded in (expand_word(word, os.environ, self.home, exit_code) for word in raw_command.words)
+                if expanded is not None
+            ]
+            redirect = None
+            if raw_command.redirect_target is not None:
+                target = expand_word(raw_command.redirect_target, os.environ, self.home, exit_code)
+                if target is None:
+                    raise ShellSyntaxError("ambiguous redirect")
+                redirect = Redirect(target=target, append=raw_command.append)
+            if argv:
+                commands.append(SimpleCommand(argv=tuple(argv), redirect=redirect))
+        return Pipeline(commands=tuple(commands))
+
     def run_line(self, line: str, columns: int | None = None) -> RunResult:
         """Run one command line and return everything it produced
 
@@ -173,12 +203,8 @@ class ShellSession:
             return self._result("", "", self.last_exit_code)
         self.record_history(stripped)
         try:
-            tokens = tokenize(line, os.environ, self.home)
-            if not tokens:
-                self.last_exit_code = EXIT_CODE_SUCCESS
-                return self._result("", "", self.last_exit_code)
-            command_list = parse(tokens)
-            host_call = host_call_for(command_list, self.host_command_names)
+            command_list = parse(tokenize(line))
+            host_call = self._host_call_for(command_list)
         except ShellSyntaxError as error:
             self.last_exit_code = EXIT_CODE_SYNTAX_ERROR
             return self._result("", f"{SHELL_NAME}: {error}\n", self.last_exit_code)
@@ -186,7 +212,7 @@ class ShellSession:
             self.last_exit_code = EXIT_CODE_FAILURE
             return self._result("", f"{SHELL_NAME}: {error}\n", self.last_exit_code)
         if host_call is not None:
-            return self._result("", "", self.last_exit_code, resolve_exit_code_in_call(host_call, self.last_exit_code))
+            return self._result("", "", self.last_exit_code, host_call)
         return self._run_command_list(command_list)
 
     def complete(self, line: str, cursor: int) -> CompletionResult:
@@ -206,8 +232,38 @@ class ShellSession:
             environment=os.environ,
         )
 
+    def _host_call_for(self, command_list: CommandList) -> HostCall | None:
+        """Return the host call a line asks for, or None when the shell runs the line itself
+
+        Command names are expanded against the current environment for the check
+
+        Args:
+            command_list: The parsed line
+
+        Raises:
+            HostCommandPlacementError: If a host command appears anywhere but alone on the line
+
+        Returns:
+            The host command, its arguments and its redirect when the line is just that command
+        """
+        host_names = set(self.host_command_names)
+        resolved = [self.resolve_pipeline(pipeline, self.last_exit_code) for pipeline in command_list.pipelines]
+        if len(resolved) == 1 and len(resolved[0].commands) == 1:
+            only_command = resolved[0].commands[0]
+            if only_command.name in host_names:
+                return HostCall(name=only_command.name, argv=only_command.argv, redirect=only_command.redirect)
+        for pipeline in resolved:
+            for command in pipeline.commands:
+                if command.name in host_names:
+                    raise HostCommandPlacementError(command.name)
+        return None
+
     def _run_command_list(self, command_list: CommandList) -> RunResult:
         """Run the pipelines of a line in order, honouring the operators between them
+
+        Each pipeline is expanded just before it runs, so a variable exported or a
+        directory changed earlier on the line is visible to it. An interrupt stops
+        the whole line
 
         Args:
             command_list: The parsed line
@@ -219,10 +275,16 @@ class ShellSession:
         stderr_parts: list[bytes] = []
         exit_code = self.last_exit_code
         try:
-            for position, pipeline in enumerate(command_list.pipelines):
+            for position, raw_pipeline in enumerate(command_list.pipelines):
                 if position > 0 and not should_run_after(command_list.operators[position - 1], exit_code):
                     continue
-                stdout_bytes, stderr_bytes, exit_code = self._run_pipeline(resolve_exit_code(pipeline, exit_code))
+                try:
+                    pipeline = self.resolve_pipeline(raw_pipeline, exit_code)
+                except ShellSyntaxError as error:
+                    stderr_parts.append(f"{SHELL_NAME}: {error}\n".encode(STREAM_ENCODING))
+                    exit_code = EXIT_CODE_SYNTAX_ERROR
+                    continue
+                stdout_bytes, stderr_bytes, exit_code = self._run_pipeline(pipeline)
                 stdout_parts.append(stdout_bytes)
                 stderr_parts.append(stderr_bytes)
         except KeyboardInterrupt:
@@ -257,10 +319,15 @@ class ShellSession:
         """Run each command with the previous one's output as its input
 
         The last command's stdout and every stderr go to the sink when there is one;
-        otherwise they are collected. A redirected command writes straight to its file
+        otherwise they are collected. A redirected command writes straight to its
+        file, and is not run at all when the file cannot be opened. A pipeline with
+        no commands, because every word expanded to nothing, succeeds without running
 
         Args:
             pipeline: The commands to chain
+
+        Raises:
+            KeyboardInterrupt: If a command was interrupted, after its streams are flushed
 
         Returns:
             The collected stdout, the collected stderr, and the last exit code
@@ -270,24 +337,23 @@ class ShellSession:
         stderr_parts: list[bytes] = []
         exit_code = EXIT_CODE_SUCCESS
         last_position = len(pipeline.commands) - 1
-        if not pipeline.commands:
-            return b"", b"", EXIT_CODE_SUCCESS
         for position, command in enumerate(pipeline.commands):
             stdin = make_stdin(stdin_data)
             stdin_data = b""
-            stderr_capture = None if self.output_sink else OutputCapture()
+            stderr_capture = None if self.output_sink else OutputCapture(OUTPUT_LIMIT_BYTES)
             stderr = make_sink_stream(self.output_sink, STDERR_KIND) if self.output_sink else stderr_capture.stream
             stdout_capture = None
-            redirect_failed = False
+            redirect_stream = None
             if command.redirect is not None:
                 redirect_stream = open_redirect(command.redirect)
-                redirect_failed = redirect_stream is None
                 if redirect_stream is None:
                     stderr.write(f"{SHELL_NAME}: {command.redirect.target}: cannot open for writing\n")
-                    stdout_capture = OutputCapture()
-                    stdout = stdout_capture.stream
-                else:
-                    stdout = redirect_stream
+                    stderr.flush()
+                    exit_code = EXIT_CODE_FAILURE
+                    if stderr_capture is not None:
+                        stderr_parts.append(stderr_capture.getvalue())
+                    continue
+                stdout = redirect_stream
             elif position == last_position and self.output_sink is not None:
                 stdout = make_sink_stream(self.output_sink, STDOUT_KIND)
             else:
@@ -298,15 +364,20 @@ class ShellSession:
             finally:
                 stdout.flush()
                 stderr.flush()
-                if command.redirect is not None and not redirect_failed:
-                    stdout.close()
-            if redirect_failed:
-                exit_code = EXIT_CODE_FAILURE
+                if redirect_stream is not None:
+                    redirect_stream.close()
             if stdout_capture is not None and stdout_capture.overflowed:
                 stderr.write(f"{SHELL_NAME}: {command.name}: output exceeded {OUTPUT_LIMIT_BYTES} bytes\n")
                 exit_code = EXIT_CODE_FAILURE
             if stderr_capture is not None:
                 stderr_parts.append(stderr_capture.getvalue())
+                if stderr_capture.overflowed:
+                    stderr_parts.append(
+                        f"\n{SHELL_NAME}: {command.name}: error output exceeded {OUTPUT_LIMIT_BYTES} bytes\n".encode(
+                            STREAM_ENCODING
+                        )
+                    )
+                    exit_code = EXIT_CODE_FAILURE
             if stdout_capture is None or command.redirect is not None:
                 continue
             if position == last_position:
@@ -352,74 +423,6 @@ def should_run_after(operator: ChainOperator, previous_exit_code: int) -> bool:
     if operator == ChainOperator.OR:
         return previous_exit_code != EXIT_CODE_SUCCESS
     return True
-
-
-def resolve_exit_code(pipeline: Pipeline, exit_code: int) -> Pipeline:
-    """Return the pipeline with every $? placeholder replaced by the exit code so far
-
-    Args:
-        pipeline: The pipeline about to run
-        exit_code: The status of everything run before it on the line
-
-    Returns:
-        A pipeline whose words and redirect targets carry the number instead
-    """
-    value = str(exit_code)
-    commands = tuple(
-        SimpleCommand(
-            argv=tuple(word.replace(LAST_EXIT_CODE_PLACEHOLDER, value) for word in command.argv),
-            redirect=None
-            if command.redirect is None
-            else Redirect(
-                target=command.redirect.target.replace(LAST_EXIT_CODE_PLACEHOLDER, value),
-                append=command.redirect.append,
-            ),
-        )
-        for command in pipeline.commands
-    )
-    return Pipeline(commands=commands)
-
-
-def resolve_exit_code_in_call(host_call: HostCall, exit_code: int) -> HostCall:
-    """Return the host call with every $? placeholder replaced
-
-    Args:
-        host_call: The call about to be handed to the host
-        exit_code: The last exit code
-
-    Returns:
-        The call with the number in place of the placeholder
-    """
-    resolved = resolve_exit_code(
-        Pipeline(commands=(SimpleCommand(argv=host_call.argv, redirect=host_call.redirect),)), exit_code
-    )
-    command = resolved.commands[0]
-    return HostCall(name=host_call.name, argv=command.argv, redirect=command.redirect)
-
-
-def host_call_for(command_list: CommandList, host_names: Sequence[str]) -> HostCall | None:
-    """Return the host call a line asks for, or None when the shell runs the line itself
-
-    Args:
-        command_list: The parsed line
-        host_names: The commands the host runs
-
-    Raises:
-        HostCommandPlacementError: If a host command appears anywhere but alone on the line
-
-    Returns:
-        The host command, its arguments and its redirect when the line is just that command
-    """
-    only_pipeline = command_list.pipelines[0]
-    if len(command_list.pipelines) == 1 and len(only_pipeline.commands) == 1:
-        only_command = only_pipeline.commands[0]
-        if only_command.name in host_names:
-            return HostCall(name=only_command.name, argv=only_command.argv, redirect=only_command.redirect)
-    for pipeline in command_list.pipelines:
-        for command in pipeline.commands:
-            if command.name in host_names:
-                raise HostCommandPlacementError(command.name)
-    return None
 
 
 def open_redirect(redirect: Redirect) -> TextIO | None:

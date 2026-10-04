@@ -9,7 +9,13 @@ from pathlib import Path
 # Project libraries
 from bash_purepython.shell.models import Candidate, CompletionResult, PartialWord, QuoteStyle, WordPosition
 from bash_purepython.shell.runner import command_help_text
-from bash_purepython.shell.tokenizer import WHITESPACE, WORD_BREAKERS, expand_tilde, expand_variables
+from bash_purepython.shell.tokenizer import (
+    DOUBLE_QUOTE_ESCAPABLE,
+    WHITESPACE,
+    WORD_BREAKERS,
+    expand_tilde,
+    expand_variables,
+)
 
 UNQUOTED_SPECIAL_CHARACTERS = set(" \t\"'\\>$|;&")
 DOUBLE_QUOTED_SPECIAL_CHARACTERS = set('"\\$')
@@ -28,6 +34,7 @@ def scan_partial_word(line: str, cursor: int) -> PartialWord:
     Returns:
         The word's start, its unquoted value so far, the quote still open, and where it sits
     """
+    cursor = min(cursor, len(line))
     index = 0
     in_word = False
     start = cursor
@@ -77,7 +84,7 @@ def scan_partial_word(line: str, cursor: int) -> PartialWord:
             if character == '"':
                 quote = QuoteStyle.NONE
                 index += 1
-            elif character == "\\" and index + 1 < cursor:
+            elif character == "\\" and index + 1 < cursor and line[index + 1] in DOUBLE_QUOTE_ESCAPABLE:
                 value += line[index + 1]
                 index += 2
             else:
@@ -208,7 +215,7 @@ def path_candidates(prefix: str, home: str, environment: Mapping[str, str]) -> l
     slash = prefix.rfind("/")
     directory_part = prefix[: slash + 1] if slash != -1 else ""
     base = prefix[slash + 1 :] if slash != -1 else prefix
-    listing_directory = Path(expand_tilde(expand_variables(directory_part, environment), home) or ".")
+    listing_directory = Path(expand_tilde(expand_variables(directory_part, environment, 0), home) or ".")
     try:
         entries = sorted(listing_directory.iterdir(), key=lambda entry: entry.name)
     except OSError:

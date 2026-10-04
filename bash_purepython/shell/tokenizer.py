@@ -5,24 +5,24 @@ import re
 from collections.abc import Mapping
 
 # Project libraries
-from bash_purepython.shell.models import LAST_EXIT_CODE_PLACEHOLDER, ShellSyntaxError, Token, TokenKind
+from bash_purepython.shell.models import RawWord, ShellSyntaxError, Token, TokenKind, WordPart
 
 WHITESPACE = " \t"
-WORD_BREAKERS = WHITESPACE + "|&;>"
+WORD_BREAKERS = WHITESPACE + "|&;><"
 DOUBLE_QUOTE_ESCAPABLE = '$"\\`'
-STDERR_REDIRECTION_MESSAGE = "stderr redirection ({form}) is not supported"
 VARIABLE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$(\?)")
+STDOUT_DESCRIPTOR = "1"
+STDERR_DESCRIPTOR = "2"
+UNSUPPORTED_REDIRECTION_MESSAGE = "{what} redirection ({form}) is not supported"
 
 
-def expand_variables(text: str, environment: Mapping[str, str]) -> str:
-    """Return the text with every $NAME and ${NAME} replaced and $? marked for later
-
-    $? becomes LAST_EXIT_CODE_PLACEHOLDER, which the session resolves just before
-    each pipeline runs so it reflects the command before it on the same line
+def expand_variables(text: str, environment: Mapping[str, str], last_exit_code: int) -> str:
+    """Return the text with every $NAME, ${NAME} and $? reference replaced
 
     Args:
         text: The unquoted or double-quoted text to expand
         environment: The variables available for expansion
+        last_exit_code: The value $? expands to
 
     Returns:
         The text with unknown variables replaced by nothing
@@ -30,7 +30,7 @@ def expand_variables(text: str, environment: Mapping[str, str]) -> str:
 
     def replace(match: re.Match[str]) -> str:
         if match.group(3) is not None:
-            return LAST_EXIT_CODE_PLACEHOLDER
+            return str(last_exit_code)
         name = match.group(1) or match.group(2)
         return environment.get(name, "")
 
@@ -54,6 +54,30 @@ def expand_tilde(value: str, home: str) -> str:
     return value
 
 
+def expand_word(word: RawWord, environment: Mapping[str, str], home: str, last_exit_code: int) -> str | None:
+    """Return the final text of a word, or None when it expands to nothing
+
+    Unquoted parts are variable-expanded and a bare leading ~ means home. A word
+    made only of unquoted text that expands to nothing is dropped, as bash drops it,
+    while a quoted empty string stays an empty argument
+
+    Args:
+        word: The word as the tokenizer saw it
+        environment: The variables available for expansion
+        home: The directory a bare ~ stands for
+        last_exit_code: The value $? expands to
+
+    Returns:
+        The expanded word, or None if it vanished
+    """
+    expanded = "".join(
+        part.text if part.quoted else expand_variables(part.text, environment, last_exit_code) for part in word.parts
+    )
+    if not expanded and not any(part.quoted for part in word.parts):
+        return None
+    return expand_tilde(expanded, home) if word.bare_tilde else expanded
+
+
 def read_operator(line: str, index: int) -> tuple[Token, int]:
     """Return the operator token starting at index and the index just past it
 
@@ -63,7 +87,7 @@ def read_operator(line: str, index: int) -> tuple[Token, int]:
 
     Raises:
         ShellSyntaxError: If a lone & is found, since background jobs are not supported, or
-            the operator is a form of stderr redirection
+            the operator is a form of redirection other than > and >>
 
     Returns:
         The operator token and the position after it
@@ -78,64 +102,65 @@ def read_operator(line: str, index: int) -> tuple[Token, int]:
         if following == "&":
             return Token(TokenKind.AND, "&&"), index + 2
         if following == ">":
-            raise ShellSyntaxError(STDERR_REDIRECTION_MESSAGE.format(form="&>"))
+            raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="stderr", form="&>"))
         raise ShellSyntaxError("background jobs are not supported")
     if character == ";":
         return Token(TokenKind.SEMICOLON, ";"), index + 1
+    if character == "<":
+        raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="input", form="<"))
     if following == "&":
-        raise ShellSyntaxError(STDERR_REDIRECTION_MESSAGE.format(form=">&"))
+        raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="stderr", form=">&"))
     if following == ">":
         return Token(TokenKind.REDIRECT_APPEND, ">>"), index + 2
     return Token(TokenKind.REDIRECT_WRITE, ">"), index + 1
 
 
-def read_word(line: str, index: int, environment: Mapping[str, str], home: str) -> tuple[str, int]:
-    """Return the word starting at index with quoting resolved, and the index just past it
+def read_word(line: str, index: int) -> tuple[RawWord, int]:
+    """Return the word starting at index with its quoting resolved into parts, and the index past it
 
-    Only unquoted and double-quoted text is variable-expanded, and only a bare unquoted
-    leading ~ means home. Inside double quotes a backslash escapes only $, ", backslash and backtick
+    Single-quoted text is literal, double-quoted text keeps everything but the escapes
+    of $, ", backslash and backtick, and unquoted backslashes escape the next character.
+    Variables are not expanded here; the parts say which text may be expanded later
 
     Args:
         line: The whole command line
         index: The position of the word's first character
-        environment: The variables available for expansion
-        home: The directory a bare ~ stands for
 
     Raises:
         ShellSyntaxError: If a quote is left open at the end of the line
 
     Returns:
-        The resolved word and the position after it
+        The word's parts and the position after it
     """
-    value = ""
+    parts: list[WordPart] = []
     plain = ""
     bare_tilde = line[index] == "~"
 
-    def flush_plain() -> str:
+    def flush_plain() -> None:
         nonlocal plain
-        expanded = expand_variables(plain, environment)
-        plain = ""
-        return expanded
+        if plain:
+            parts.append(WordPart(text=plain, quoted=False))
+            plain = ""
 
     while index < len(line):
         character = line[index]
         if character in WORD_BREAKERS:
             break
         if character == "'":
-            value += flush_plain()
+            flush_plain()
             closing = line.find("'", index + 1)
             if closing == -1:
                 raise ShellSyntaxError("unterminated single quote")
-            value += line[index + 1 : closing]
+            parts.append(WordPart(text=line[index + 1 : closing], quoted=True))
             index = closing + 1
             continue
         if character == '"':
-            value += flush_plain()
+            flush_plain()
             index += 1
             while index < len(line) and line[index] != '"':
                 if line[index] == "\\" and index + 1 < len(line) and line[index + 1] in DOUBLE_QUOTE_ESCAPABLE:
-                    value += flush_plain()
-                    value += line[index + 1]
+                    flush_plain()
+                    parts.append(WordPart(text=line[index + 1], quoted=True))
                     index += 2
                     continue
                 plain += line[index]
@@ -143,32 +168,35 @@ def read_word(line: str, index: int, environment: Mapping[str, str], home: str) 
             if index >= len(line):
                 raise ShellSyntaxError("unterminated double quote")
             index += 1
-            value += flush_plain()
+            # Text inside double quotes expands but counts as quoted, so "" and "$UNSET" stay arguments
+            if plain:
+                parts.append(WordPart(text=plain, quoted=False))
+                plain = ""
+            parts.append(WordPart(text="", quoted=True))
             continue
         if character == "\\" and index + 1 < len(line):
-            value += flush_plain()
-            value += line[index + 1]
+            flush_plain()
+            parts.append(WordPart(text=line[index + 1], quoted=True))
             index += 2
             continue
         plain += character
         index += 1
-    value += flush_plain()
-    return (expand_tilde(value, home) if bare_tilde else value), index
+    flush_plain()
+    return RawWord(parts=tuple(parts), bare_tilde=bare_tilde), index
 
 
-def tokenize(line: str, environment: Mapping[str, str], home: str) -> list[Token]:
-    """Return the words and operators of a command line
+def tokenize(line: str) -> list[Token]:
+    """Return the words and operators of a command line, words still unexpanded
 
     Args:
         line: The command line as typed
-        environment: The variables available for expansion
-        home: The directory a bare ~ stands for
 
     Raises:
-        ShellSyntaxError: If a quote is left open, a lone & appears, or stderr is redirected
+        ShellSyntaxError: If a quote is left open, a lone & appears, or an unsupported
+            redirection form is used
 
     Returns:
-        The tokens in order, with quoting and expansion already applied to words
+        The tokens in order
     """
     tokens: list[Token] = []
     index = 0
@@ -182,11 +210,12 @@ def tokenize(line: str, environment: Mapping[str, str], home: str) -> list[Token
             tokens.append(token)
             continue
         start = index
-        value, index = read_word(line, index, environment, home)
+        word, index = read_word(line, index)
         raw = line[start:index]
-        was_quoted = any(quote in raw for quote in "'\"\\")
         if raw.isdigit() and index < len(line) and line[index] == ">":
-            raise ShellSyntaxError(STDERR_REDIRECTION_MESSAGE.format(form=f"{raw}>"))
-        if value or was_quoted:
-            tokens.append(Token(TokenKind.WORD, value))
+            if raw == STDOUT_DESCRIPTOR:
+                continue
+            what = "stderr" if raw == STDERR_DESCRIPTOR else f"file descriptor {raw}"
+            raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what=what, form=f"{raw}>"))
+        tokens.append(Token(TokenKind.WORD, raw, word))
     return tokens

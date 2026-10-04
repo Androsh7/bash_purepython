@@ -331,3 +331,86 @@ def test_run_line_skips_an_empty_command_inside_a_list(session: ShellSession) ->
 
     assert result.stdout == "0\n"
     assert result.stderr == ""
+
+
+def test_run_line_rejects_adjacent_operators(session: ShellSession) -> None:
+    """Check that ;; is a syntax error rather than a silent success"""
+    session.run_line("false")
+
+    result = session.run_line("false ;; echo $?")
+
+    assert result.exit_code == 2
+    assert "syntax error" in result.stderr
+
+
+def test_run_line_expands_variables_per_pipeline(session: ShellSession) -> None:
+    """Check that an export earlier on the line is visible to a later command"""
+    result = session.run_line("export GREETING=hello; echo $GREETING")
+
+    assert result.stdout == "hello\n"
+
+
+def test_run_line_sees_a_directory_change_earlier_on_the_line(session: ShellSession, shell_home: Path) -> None:
+    """Check that $PWD after cd on the same line names the new directory"""
+    (shell_home / "sub").mkdir()
+
+    result = session.run_line("cd sub; echo $PWD")
+
+    assert Path(result.stdout.strip()) == shell_home / "sub"
+
+
+def test_run_line_does_not_run_a_command_whose_redirect_fails(session: ShellSession, shell_home: Path) -> None:
+    """Check that a bad redirect target stops the command before it has side effects"""
+    (shell_home / "keep.txt").write_text("x")
+
+    result = session.run_line("rm keep.txt > missing/log")
+
+    assert result.exit_code == 1
+    assert (shell_home / "keep.txt").exists()
+
+
+def test_run_line_aborts_the_rest_of_the_line_on_interrupt(
+    session: ShellSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that an interrupted command stops the list with exit code 130"""
+    # Standard libraries
+    import bash_purepython.sleep as sleep_module
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sleep_module, "main", interrupted)
+
+    result = session.run_line("sleep 100; echo still-ran")
+
+    assert result.exit_code == 130
+    assert "still-ran" not in result.stdout
+
+
+def test_run_line_reports_stderr_that_exceeds_the_limit(session: ShellSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check that overflowing stderr is an error, not a silent truncation with exit 0"""
+    monkeypatch.setattr(session_module, "OUTPUT_LIMIT_BYTES", 64)
+    # Standard libraries
+    import sys
+
+    import bash_purepython.sleep as sleep_module
+
+    def noisy() -> None:
+        sys.stderr.write("e" * 200)
+
+    monkeypatch.setattr(sleep_module, "main", noisy)
+
+    result = session.run_line("sleep 1")
+
+    assert result.exit_code == 1
+    assert "error output exceeded" in result.stderr
+
+
+def test_run_line_resolves_a_variable_in_a_host_call(shell_home: Path) -> None:
+    """Check that a host command's arguments are expanded"""
+    session = ShellSession(home=str(shell_home), host_commands=(HostCommand("vim", ""),), environment={"F": "a.txt"})
+
+    result = session.run_line("vim $F")
+
+    assert result.host_call is not None
+    assert result.host_call.argv == ("vim", "a.txt")

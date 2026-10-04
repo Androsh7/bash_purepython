@@ -1,38 +1,45 @@
-"""Tests for the command line tokenizer"""
+"""Tests for the command line tokenizer and word expansion"""
 
 # Third-party libraries
 import pytest
 
 # Project libraries
-from bash_purepython.shell.models import LAST_EXIT_CODE_PLACEHOLDER, ShellSyntaxError, Token, TokenKind
-from bash_purepython.shell.tokenizer import tokenize
+from bash_purepython.shell.models import ShellSyntaxError, TokenKind
+from bash_purepython.shell.tokenizer import expand_word, tokenize
 
 HOME = "/home/user"
 ENVIRONMENT = {"X": "1", "NAME": "world"}
 
 
-def words(*values: str) -> list[Token]:
-    """Return word tokens for each value"""
-    return [Token(TokenKind.WORD, value) for value in values]
+def expand_line(line: str, last_exit_code: int = 0) -> list[str | None]:
+    """Return each token as its expanded word, or the operator text"""
+    expanded: list[str | None] = []
+    for token in tokenize(line):
+        if token.kind == TokenKind.WORD and token.word is not None:
+            expanded.append(expand_word(token.word, ENVIRONMENT, HOME, last_exit_code))
+        else:
+            expanded.append(token.value)
+    return expanded
 
 
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("echo a b", words("echo", "a", "b")),
-        ("echo   a\tb", words("echo", "a", "b")),
-        ("echo 'a $X b'", words("echo", "a $X b")),
-        ('echo "hi $X"', words("echo", "hi 1")),
-        ('echo "\\$X"', words("echo", "$X")),
-        ('echo "\\.txt"', words("echo", "\\.txt")),
-        ('echo "a\\\\b"', words("echo", "a\\b")),
-        ("echo $X", words("echo", "1")),
-        ("echo ${X}y", words("echo", "1y")),
-        ("echo $MISSING.", words("echo", ".")),
-        ("echo a\\ b", words("echo", "a b")),
-        ("echo ''", words("echo", "")),
-        ("echo a'b'c", words("echo", "abc")),
-        ("echo '|' '&&'", words("echo", "|", "&&")),
+        ("echo a b", ["echo", "a", "b"]),
+        ("echo   a\tb", ["echo", "a", "b"]),
+        ("echo 'a $X b'", ["echo", "a $X b"]),
+        ('echo "hi $X"', ["echo", "hi 1"]),
+        ('echo "\\$X"', ["echo", "$X"]),
+        ('echo "\\.txt"', ["echo", "\\.txt"]),
+        ('echo "a\\\\b"', ["echo", "a\\b"]),
+        ("echo $X", ["echo", "1"]),
+        ("echo ${X}y", ["echo", "1y"]),
+        ("echo $MISSING.", ["echo", "."]),
+        ("echo a\\ b", ["echo", "a b"]),
+        ("echo ''", ["echo", ""]),
+        ('echo "$MISSING"', ["echo", ""]),
+        ("echo a'b'c", ["echo", "abc"]),
+        ("echo '|' '&&'", ["echo", "|", "&&"]),
     ],
     ids=[
         "plain",
@@ -47,59 +54,58 @@ def words(*values: str) -> list[Token]:
         "unknown-variable",
         "escaped-space",
         "empty-quotes",
+        "quoted-empty-expansion",
         "adjacent-quotes",
         "quoted-operators",
     ],
 )
-def test_tokenize_resolves_quoting_and_expansion(line: str, expected: list[Token]) -> None:
+def test_expand_word_resolves_quoting_and_expansion(line: str, expected: list[str | None]) -> None:
     """Check that quoting, escapes and variable expansion follow bash rules"""
-    tokens = tokenize(line, ENVIRONMENT, HOME)
+    assert expand_line(line) == expected
 
-    assert tokens == expected
+
+def test_expand_word_drops_an_unquoted_word_that_expands_to_nothing() -> None:
+    """Check that a bare unset variable vanishes rather than becoming an empty argument"""
+    assert expand_line("echo $MISSING end") == ["echo", None, "end"]
 
 
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("cd ~", words("cd", HOME)),
-        ("ls ~/x", words("ls", f"{HOME}/x")),
-        ("echo '~'", words("echo", "~")),
-        ("echo a~", words("echo", "a~")),
-        ("echo ~user", words("echo", "~user")),
+        ("cd ~", ["cd", HOME]),
+        ("ls ~/x", ["ls", f"{HOME}/x"]),
+        ("echo '~'", ["echo", "~"]),
+        ("echo a~", ["echo", "a~"]),
+        ("echo ~user", ["echo", "~user"]),
     ],
     ids=["bare", "with-path", "quoted", "not-leading", "other-user"],
 )
-def test_tokenize_expands_only_a_bare_leading_tilde(line: str, expected: list[Token]) -> None:
+def test_expand_word_expands_only_a_bare_leading_tilde(line: str, expected: list[str | None]) -> None:
     """Check that ~ means home only when it is unquoted and starts the word"""
-    tokens = tokenize(line, ENVIRONMENT, HOME)
-
-    assert tokens == expected
+    assert expand_line(line) == expected
 
 
-def test_tokenize_marks_question_mark_for_the_session_to_resolve() -> None:
-    """Check that $? becomes the placeholder the session fills in per pipeline"""
-    tokens = tokenize("echo $?", ENVIRONMENT, HOME)
-
-    assert tokens == words("echo", LAST_EXIT_CODE_PLACEHOLDER)
+def test_expand_word_expands_question_mark_to_the_given_exit_code() -> None:
+    """Check that $? carries the exit code it is expanded with"""
+    assert expand_line("echo $?", last_exit_code=3) == ["echo", "3"]
 
 
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("a | b", [Token(TokenKind.WORD, "a"), Token(TokenKind.PIPE, "|"), Token(TokenKind.WORD, "b")]),
-        ("a||b", [Token(TokenKind.WORD, "a"), Token(TokenKind.OR, "||"), Token(TokenKind.WORD, "b")]),
-        ("a&&b", [Token(TokenKind.WORD, "a"), Token(TokenKind.AND, "&&"), Token(TokenKind.WORD, "b")]),
-        ("a;b", [Token(TokenKind.WORD, "a"), Token(TokenKind.SEMICOLON, ";"), Token(TokenKind.WORD, "b")]),
-        ("a>b", [Token(TokenKind.WORD, "a"), Token(TokenKind.REDIRECT_WRITE, ">"), Token(TokenKind.WORD, "b")]),
-        ("a >> b", [Token(TokenKind.WORD, "a"), Token(TokenKind.REDIRECT_APPEND, ">>"), Token(TokenKind.WORD, "b")]),
+        ("a | b", ["a", "|", "b"]),
+        ("a||b", ["a", "||", "b"]),
+        ("a&&b", ["a", "&&", "b"]),
+        ("a;b", ["a", ";", "b"]),
+        ("a>b", ["a", ">", "b"]),
+        ("a >> b", ["a", ">>", "b"]),
+        ("echo 1>out", ["echo", ">", "out"]),
     ],
-    ids=["pipe", "or", "and", "semicolon", "write", "append"],
+    ids=["pipe", "or", "and", "semicolon", "write", "append", "stdout-descriptor"],
 )
-def test_tokenize_recognises_operators_without_spaces(line: str, expected: list[Token]) -> None:
+def test_tokenize_recognises_operators_without_spaces(line: str, expected: list[str | None]) -> None:
     """Check that every operator is found whether or not it is surrounded by spaces"""
-    tokens = tokenize(line, ENVIRONMENT, HOME)
-
-    assert tokens == expected
+    assert expand_line(line) == expected
 
 
 @pytest.mark.parametrize(
@@ -110,15 +116,22 @@ def test_tokenize_recognises_operators_without_spaces(line: str, expected: list[
 def test_tokenize_raises_on_invalid_syntax(line: str) -> None:
     """Check that an open quote or a lone ampersand is a syntax error"""
     with pytest.raises(ShellSyntaxError):
-        tokenize(line, ENVIRONMENT, HOME)
+        tokenize(line)
 
 
 @pytest.mark.parametrize(
-    "line",
-    ["ls 2>/dev/null", "ls 2>&1 | wc -l", "ls &>out", "ls >&2"],
-    ids=["descriptor", "merge", "both", "to-descriptor"],
+    ("line", "expected_message"),
+    [
+        ("ls 2>/dev/null", "stderr redirection"),
+        ("ls 2>&1 | wc -l", "stderr redirection"),
+        ("ls &>out", "stderr redirection"),
+        ("ls >&2", "stderr redirection"),
+        ("ls 3>out", "file descriptor 3"),
+        ("cat < f", "input redirection"),
+    ],
+    ids=["descriptor", "merge", "both", "to-descriptor", "other-descriptor", "input"],
 )
-def test_tokenize_rejects_stderr_redirection_by_name(line: str) -> None:
-    """Check that every stderr redirection form is refused with a message that names it"""
-    with pytest.raises(ShellSyntaxError, match="stderr redirection"):
-        tokenize(line, ENVIRONMENT, HOME)
+def test_tokenize_rejects_unsupported_redirection_by_name(line: str, expected_message: str) -> None:
+    """Check that every unsupported redirection form is refused with a message that names it"""
+    with pytest.raises(ShellSyntaxError, match=expected_message):
+        tokenize(line)

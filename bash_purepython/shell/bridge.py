@@ -5,7 +5,7 @@ import dataclasses
 import json
 
 # Project libraries
-from bash_purepython.shell.models import DEFAULT_TERMINAL_COLUMNS, HostCommand, ShellError
+from bash_purepython.shell.models import DEFAULT_TERMINAL_COLUMNS, CompletionResult, HostCommand, ShellError
 from bash_purepython.shell.repl import ReplSession
 from bash_purepython.shell.session import ShellSession
 from bash_purepython.shell.streams import OutputSink
@@ -89,8 +89,57 @@ def run_line(payload_json: str) -> str:
     return json.dumps(dataclasses.asdict(result))
 
 
+def index_from_utf16_offset(text: str, offset: int) -> int:
+    """Return the code point index that a JavaScript string offset refers to
+
+    Args:
+        text: The text the offset points into
+        offset: The offset in UTF-16 code units, as the host counts
+
+    Returns:
+        The index into the Python string, clamped to its length
+    """
+    units = 0
+    for index, character in enumerate(text):
+        if units >= offset:
+            return index
+        units += 2 if ord(character) > 0xFFFF else 1
+    return len(text)
+
+
+def utf16_offset_from_index(text: str, index: int) -> int:
+    """Return the JavaScript string offset of a code point index
+
+    Args:
+        text: The text the index points into
+        index: The index into the Python string
+
+    Returns:
+        The offset in UTF-16 code units
+    """
+    return sum(2 if ord(character) > 0xFFFF else 1 for character in text[:index])
+
+
+def completion_for_host(result: CompletionResult, text: str) -> dict[str, object]:
+    """Return a completion result with its word start counted the way the host counts
+
+    Args:
+        result: The completion with a code point word start
+        text: The line the word start points into
+
+    Returns:
+        The fields of the result, word_start in UTF-16 code units
+    """
+    fields = dataclasses.asdict(result)
+    fields["word_start"] = utf16_offset_from_index(text, result.word_start)
+    return fields
+
+
 def complete_line(payload_json: str) -> str:
     """Complete the word under the cursor of a shell line
+
+    The cursor arrives in UTF-16 code units, as JavaScript counts, and the word
+    start goes back the same way
 
     Args:
         payload_json: JSON with line and cursor
@@ -99,8 +148,9 @@ def complete_line(payload_json: str) -> str:
         The JSON-encoded CompletionResult
     """
     payload = json.loads(payload_json)
-    result = current_shell().complete(payload["line"], payload["cursor"])
-    return json.dumps(dataclasses.asdict(result))
+    line = payload["line"]
+    result = current_shell().complete(line, index_from_utf16_offset(line, payload["cursor"]))
+    return json.dumps(completion_for_host(result, line))
 
 
 def report_host_exit(payload_json: str) -> str:
@@ -153,4 +203,4 @@ def complete_repl(payload_json: str) -> str:
     """
     payload = json.loads(payload_json)
     result = current_repl().complete(payload["text"])
-    return json.dumps(dataclasses.asdict(result))
+    return json.dumps(completion_for_host(result, payload["text"]))

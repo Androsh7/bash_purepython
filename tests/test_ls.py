@@ -13,8 +13,30 @@ from bash_purepython.shell.runner import run_command
 
 @pytest.mark.parametrize(
     ("size_bytes", "expected"),
-    [(0, "0"), (512, "512"), (1024, "1.0K"), (1536, "1.5K"), (10 * 1024, "10K"), (12 * 1024 * 1024, "12M")],
-    ids=["zero", "bytes", "one-kilobyte", "fraction", "ten-kilobytes", "megabytes"],
+    [
+        (0, "0"),
+        (512, "512"),
+        (1024, "1.0K"),
+        (1025, "1.1K"),
+        (1536, "1.5K"),
+        (10239, "10K"),
+        (10 * 1024, "10K"),
+        (1048575, "1.0M"),
+        (12 * 1024 * 1024, "12M"),
+        (2**60, "1.0E"),
+    ],
+    ids=[
+        "zero",
+        "bytes",
+        "one-kilobyte",
+        "rounds-up",
+        "fraction",
+        "just-under-ten",
+        "ten-kilobytes",
+        "just-under-a-megabyte",
+        "megabytes",
+        "exabyte",
+    ],
 )
 def test_format_size_uses_the_ls_short_form(size_bytes: int, expected: str) -> None:
     """Check that sizes read the way ls -lh prints them"""

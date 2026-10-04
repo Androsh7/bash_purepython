@@ -4,10 +4,10 @@
 from bash_purepython.shell.models import (
     ChainOperator,
     CommandList,
-    Pipeline,
-    Redirect,
+    RawCommand,
+    RawPipeline,
+    RawWord,
     ShellSyntaxError,
-    SimpleCommand,
     Token,
     TokenKind,
 )
@@ -20,7 +20,7 @@ CHAIN_OPERATORS = {
 REDIRECT_KINDS = {TokenKind.REDIRECT_WRITE, TokenKind.REDIRECT_APPEND}
 
 
-def parse_simple_command(tokens: list[Token], index: int) -> tuple[SimpleCommand | None, int]:
+def parse_simple_command(tokens: list[Token], index: int) -> tuple[RawCommand, int]:
     """Return the command starting at index and the index of the token after it
 
     Args:
@@ -28,38 +28,36 @@ def parse_simple_command(tokens: list[Token], index: int) -> tuple[SimpleCommand
         index: The position of the command's first token
 
     Raises:
-        ShellSyntaxError: If a redirect has no target or stands without a command
+        ShellSyntaxError: If the command has no words or a redirect has no target
 
     Returns:
-        The command, or None when there are no words before the next operator, and the
-        position of that operator or the end
+        The command and the position of the next operator or the end
     """
-    argv: list[str] = []
-    redirect = None
+    words: list[RawWord] = []
+    redirect_target = None
+    append = False
     while index < len(tokens):
         token = tokens[index]
-        if token.kind == TokenKind.WORD:
-            argv.append(token.value)
+        if token.kind == TokenKind.WORD and token.word is not None:
+            words.append(token.word)
             index += 1
             continue
         if token.kind in REDIRECT_KINDS:
-            if index + 1 >= len(tokens) or tokens[index + 1].kind != TokenKind.WORD:
+            if index + 1 >= len(tokens) or tokens[index + 1].word is None:
                 raise ShellSyntaxError("syntax error: missing redirect target")
-            redirect = Redirect(target=tokens[index + 1].value, append=token.kind == TokenKind.REDIRECT_APPEND)
+            redirect_target = tokens[index + 1].word
+            append = token.kind == TokenKind.REDIRECT_APPEND
             index += 2
             continue
         break
-    if not argv:
-        if redirect is not None:
-            raise ShellSyntaxError("syntax error: redirect without a command")
-        return None, index
-    return SimpleCommand(argv=tuple(argv), redirect=redirect), index
+    if not words:
+        unexpected = tokens[index].value if index < len(tokens) else "newline"
+        raise ShellSyntaxError(f"syntax error near unexpected token '{unexpected}'")
+    return RawCommand(words=tuple(words), redirect_target=redirect_target, append=append), index
 
 
-def parse_pipeline(tokens: list[Token], index: int) -> tuple[Pipeline, int]:
+def parse_pipeline(tokens: list[Token], index: int) -> tuple[RawPipeline, int]:
     """Return the pipeline starting at index and the index of the token after it
-
-    A lone command that expanded to no words is an empty pipeline, which runs nothing
 
     Args:
         tokens: The whole token list
@@ -71,18 +69,14 @@ def parse_pipeline(tokens: list[Token], index: int) -> tuple[Pipeline, int]:
     Returns:
         The pipeline and the position of the next chain operator or the end
     """
-    commands: list[SimpleCommand] = []
+    commands: list[RawCommand] = []
     while True:
         command, index = parse_simple_command(tokens, index)
-        piped = index < len(tokens) and tokens[index].kind == TokenKind.PIPE
-        if command is None and (commands or piped):
-            raise ShellSyntaxError("syntax error near unexpected token '|'")
-        if command is not None:
-            commands.append(command)
-        if piped:
+        commands.append(command)
+        if index < len(tokens) and tokens[index].kind == TokenKind.PIPE:
             index += 1
             continue
-        return Pipeline(commands=tuple(commands)), index
+        return RawPipeline(commands=tuple(commands)), index
 
 
 def parse(tokens: list[Token]) -> CommandList:
@@ -99,7 +93,7 @@ def parse(tokens: list[Token]) -> CommandList:
     Returns:
         The pipelines in order with one chain operator between each pair
     """
-    pipelines: list[Pipeline] = []
+    pipelines: list[RawPipeline] = []
     operators: list[ChainOperator] = []
     index = 0
     while True:
