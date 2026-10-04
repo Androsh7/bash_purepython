@@ -21,6 +21,11 @@ completion = session.complete("gre", cursor=3)
 print(completion.replacement)
 ```
 
+Pass `output_sink=` a callable taking `(kind, text)` to receive stdout and stderr
+as they are written instead of in the result. Pipelines run one stage at a
+time, so only the last stage streams; everything before it is buffered up to
+`OUTPUT_LIMIT_BYTES`.
+
 Commands the embedding host runs itself (an editor, a network fetch, a file
 upload) are declared as `HostCommand`s. The session reports them back as a
 `host_call` instead of running them, and refuses them inside a pipeline.

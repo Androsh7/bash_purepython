@@ -3,13 +3,13 @@
 # Standard libraries
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 # Project libraries
 from bash_purepython.shell.models import Candidate, CompletionResult, PartialWord, QuoteStyle, WordPosition
 from bash_purepython.shell.runner import command_help_text
-from bash_purepython.shell.tokenizer import WHITESPACE, WORD_BREAKERS, expand_tilde
+from bash_purepython.shell.tokenizer import WHITESPACE, WORD_BREAKERS, expand_tilde, expand_variables
 
 UNQUOTED_SPECIAL_CHARACTERS = set(" \t\"'\\>$|;&")
 DOUBLE_QUOTED_SPECIAL_CHARACTERS = set('"\\$')
@@ -112,27 +112,29 @@ def scan_partial_word(line: str, cursor: int) -> PartialWord:
     return PartialWord(start=start, value=value, quote=quote, position=position, command_name=command_name)
 
 
-def render_word(value: str, quote: QuoteStyle, final: bool) -> str:
-    """Return a completed value written back in the word's original quoting style
+def render_suffix(suffix: str, quote: QuoteStyle, final: bool) -> str:
+    """Return the text to append after what the user typed to complete the word
+
+    The typed part is kept exactly as it was, so only the new characters are escaped
+    or quoted, in the style the word was opened with
 
     Args:
-        value: The literal text to write
+        suffix: The literal characters the completion adds
         quote: The quote the word was opened with, if any
         final: Whether the word is complete, which closes the quote and adds a space
 
     Returns:
-        The text to put in the line in place of the partial word
+        The text to insert at the cursor
     """
-    if quote == QuoteStyle.SINGLE and "'" not in value:
-        return f"'{value}' " if final else f"'{value}"
+    if quote == QuoteStyle.SINGLE:
+        return f"{suffix}' " if final else suffix
     if quote == QuoteStyle.DOUBLE:
         escaped = "".join(
-            f"\\{character}" if character in DOUBLE_QUOTED_SPECIAL_CHARACTERS else character for character in value
+            f"\\{character}" if character in DOUBLE_QUOTED_SPECIAL_CHARACTERS else character for character in suffix
         )
-        return f'"{escaped}" ' if final else f'"{escaped}'
-    tilde = "~" if value.startswith("~") else ""
-    escaped = tilde + "".join(
-        f"\\{character}" if character in UNQUOTED_SPECIAL_CHARACTERS else character for character in value[len(tilde) :]
+        return f'{escaped}" ' if final else escaped
+    escaped = "".join(
+        f"\\{character}" if character in UNQUOTED_SPECIAL_CHARACTERS else character for character in suffix
     )
     return f"{escaped} " if final else escaped
 
@@ -187,22 +189,26 @@ def flag_candidates(prefix: str, command_name: str) -> list[Candidate]:
     return name_candidates(prefix, option_names_from_help(command_help_text(command_name)))
 
 
-def path_candidates(prefix: str, home: str) -> list[Candidate]:
+def path_candidates(prefix: str, home: str, environment: Mapping[str, str]) -> list[Candidate]:
     """Return the filesystem entries that continue prefix
 
-    A leading ~ is expanded for the lookup and kept in the candidate values
+    A leading ~ and any $VAR are expanded for the lookup and kept as typed in the
+    candidate values
 
     Args:
         prefix: The path typed so far
         home: The directory a bare ~ stands for
+        environment: The variables a $VAR in the path may name
 
     Returns:
         One candidate per matching entry, directories with a trailing slash
     """
+    if prefix == "~":
+        return [Candidate(value="~/", display="~/", is_directory=True)]
     slash = prefix.rfind("/")
     directory_part = prefix[: slash + 1] if slash != -1 else ""
     base = prefix[slash + 1 :] if slash != -1 else prefix
-    listing_directory = Path(expand_tilde(directory_part, home) or ".")
+    listing_directory = Path(expand_tilde(expand_variables(directory_part, environment), home) or ".")
     try:
         entries = sorted(listing_directory.iterdir(), key=lambda entry: entry.name)
     except OSError:
@@ -220,11 +226,12 @@ def path_candidates(prefix: str, home: str) -> list[Candidate]:
     return candidates
 
 
-def build_completion_result(word: PartialWord, candidates: Sequence[Candidate]) -> CompletionResult:
+def build_completion_result(word: PartialWord, typed: str, candidates: Sequence[Candidate]) -> CompletionResult:
     """Return what the line editor should do with the candidates for a word
 
     Args:
         word: The partial word being completed
+        typed: The word exactly as it appears in the line, quotes and escapes included
         candidates: Every value that could complete it
 
     Returns:
@@ -234,16 +241,12 @@ def build_completion_result(word: PartialWord, candidates: Sequence[Candidate]) 
         return CompletionResult(word_start=word.start, replacement=None, listing=())
     if len(candidates) == 1:
         only = candidates[0]
-        return CompletionResult(
-            word_start=word.start,
-            replacement=render_word(only.value, word.quote, final=not only.is_directory),
-            listing=(),
-        )
+        suffix = render_suffix(only.value[len(word.value) :], word.quote, final=not only.is_directory)
+        return CompletionResult(word_start=word.start, replacement=typed + suffix, listing=())
     common = os.path.commonprefix([candidate.value for candidate in candidates])
     if len(common) > len(word.value):
-        return CompletionResult(
-            word_start=word.start, replacement=render_word(common, word.quote, final=False), listing=()
-        )
+        suffix = render_suffix(common[len(word.value) :], word.quote, final=False)
+        return CompletionResult(word_start=word.start, replacement=typed + suffix, listing=())
     return CompletionResult(
         word_start=word.start, replacement=None, listing=tuple(candidate.display for candidate in candidates)
     )
@@ -256,6 +259,7 @@ def complete(
     package_names: Sequence[str],
     host_names: Sequence[str],
     home: str,
+    environment: Mapping[str, str],
 ) -> CompletionResult:
     """Return the completion for the word under the cursor
 
@@ -269,6 +273,7 @@ def complete(
         package_names: The commands the package ships
         host_names: The commands the embedding host runs
         home: The directory a bare ~ stands for
+        environment: The variables a $VAR in a path may name
 
     Returns:
         A replacement for the word or a listing of candidates
@@ -284,5 +289,5 @@ def complete(
     ):
         candidates = flag_candidates(word.value, word.command_name)
     else:
-        candidates = path_candidates(word.value, home)
-    return build_completion_result(word, candidates)
+        candidates = path_candidates(word.value, home, environment)
+    return build_completion_result(word, line[word.start : cursor], candidates)

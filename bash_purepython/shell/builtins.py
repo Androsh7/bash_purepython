@@ -93,7 +93,12 @@ def change_directory(context: BuiltinContext) -> int:
         context.stderr.write("cd: too many arguments\n")
         return EXIT_CODE_FAILURE
     argument = context.argv[1] if len(context.argv) > 1 else context.session.home
-    target = os.environ.get("OLDPWD", str(Path.cwd())) if argument == PREVIOUS_DIRECTORY_ARGUMENT else argument
+    target = argument
+    if argument == PREVIOUS_DIRECTORY_ARGUMENT:
+        if "OLDPWD" not in os.environ:
+            context.stderr.write("cd: OLDPWD not set\n")
+            return EXIT_CODE_FAILURE
+        target = os.environ["OLDPWD"]
     previous = str(Path.cwd())
     try:
         os.chdir(target)
@@ -131,6 +136,7 @@ def export_variables(context: BuiltinContext) -> int:
             exit_code = EXIT_CODE_FAILURE
             continue
         os.environ[name] = value
+        context.session.register_exported(name)
     return exit_code
 
 

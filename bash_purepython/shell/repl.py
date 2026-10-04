@@ -6,7 +6,6 @@ import os
 import re
 import rlcompleter
 import sys
-import traceback
 from typing import Any
 
 # Project libraries
@@ -38,12 +37,36 @@ def name_completion_result(start: int, name: str, values: list[str]) -> Completi
     return CompletionResult(word_start=start, replacement=None, listing=tuple(values))
 
 
+class ReplInterpreter(code.InteractiveInterpreter):
+    """Run statements the way the standard interactive interpreter does, noting syntax errors"""
+
+    def __init__(self, session_globals: dict[str, Any]):
+        """Bind the interpreter to the session's globals
+
+        Args:
+            session_globals: The namespace statements run in
+        """
+        super().__init__(session_globals)
+        self.syntax_error_seen = False
+
+    def showsyntaxerror(self, filename: str | None = None, **keyword_arguments: Any) -> None:
+        """Print the syntax error the way the interpreter does and remember that one happened
+
+        Args:
+            filename: The name to show for the source
+            keyword_arguments: Extra arguments newer Python versions pass through
+        """
+        self.syntax_error_seen = True
+        super().showsyntaxerror(filename, **keyword_arguments)
+
+
 class ReplSession:
     """Hold the globals and the pending lines of one interactive session"""
 
     def __init__(self):
         """Start with empty globals, as a fresh interpreter would"""
         self._globals: dict[str, Any] = {"__name__": "__main__", "__doc__": None}
+        self._interpreter = ReplInterpreter(self._globals)
         self._pending_lines: list[str] = []
 
     def banner(self) -> str:
@@ -54,7 +77,9 @@ class ReplSession:
     def feed(self, line: str) -> ReplFeedResult:
         """Accept one line, running the statement once it is complete
 
-        Output and tracebacks go to the real sys.stdout and sys.stderr so the host can stream them
+        Output and tracebacks go to the real sys.stdout and sys.stderr so the host can
+        stream them, and both are flushed before returning. An exit request is only
+        honoured at the top level, not inside a pending block
 
         Args:
             line: The line as typed, without its newline
@@ -62,26 +87,24 @@ class ReplSession:
         Returns:
             Whether more input is needed, the statement ran, it failed to compile, or exit was requested
         """
-        if line.strip() in EXIT_REQUESTS:
-            self._pending_lines = []
+        if not self._pending_lines and line.strip() in EXIT_REQUESTS:
             return ReplFeedResult(status=ReplStatus.EXIT)
         self._pending_lines.append(line)
         source = "\n".join(self._pending_lines)
+        self._interpreter.syntax_error_seen = False
         try:
-            compiled = code.compile_command(source, SOURCE_FILENAME, "single")
-        except (SyntaxError, OverflowError, ValueError):
-            traceback.print_exc()
+            needs_more = self._interpreter.runsource(source, SOURCE_FILENAME, "single")
+        except SystemExit:
             self._pending_lines = []
-            return ReplFeedResult(status=ReplStatus.ERROR)
-        if compiled is None:
+            return ReplFeedResult(status=ReplStatus.EXIT)
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        if needs_more:
             return ReplFeedResult(status=ReplStatus.MORE)
         self._pending_lines = []
-        try:
-            exec(compiled, self._globals)
-        except SystemExit:
-            return ReplFeedResult(status=ReplStatus.EXIT)
-        except Exception:
-            traceback.print_exc()
+        if self._interpreter.syntax_error_seen:
+            return ReplFeedResult(status=ReplStatus.ERROR)
         return ReplFeedResult(status=ReplStatus.DONE)
 
     def complete(self, text_before_cursor: str) -> CompletionResult:

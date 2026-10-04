@@ -113,3 +113,29 @@ def test_complete_returns_nothing_after_punctuation(repl: ReplSession) -> None:
 def test_banner_names_the_python_version(repl: ReplSession) -> None:
     """Check that the banner starts like the interpreter's"""
     assert repl.banner().startswith("Python 3.")
+
+
+def test_feed_keeps_an_exit_word_inside_a_block_as_code(repl: ReplSession) -> None:
+    """Check that an indented exit inside a pending block does not leave the REPL"""
+    repl.feed("def leave():")
+
+    result = repl.feed("    exit")
+
+    assert result.status == ReplStatus.MORE
+
+
+def test_feed_reports_a_keyboard_interrupt_as_a_traceback(
+    repl: ReplSession, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Check that a BaseException raised by a statement is shown, not propagated"""
+    result = repl.feed("raise KeyboardInterrupt")
+
+    assert result.status == ReplStatus.DONE
+    assert "KeyboardInterrupt" in capsys.readouterr().err
+
+
+def test_feed_shows_only_the_user_frames_in_a_traceback(repl: ReplSession, capsys: pytest.CaptureFixture[str]) -> None:
+    """Check that the shell's own frames are not part of a runtime error's traceback"""
+    repl.feed("1 / 0")
+
+    assert "repl.py" not in capsys.readouterr().err

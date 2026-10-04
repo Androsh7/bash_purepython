@@ -1,10 +1,15 @@
 """Tests for running whole command lines"""
 
 # Standard libraries
+import os
 from pathlib import Path
 
+# Third-party libraries
+import pytest
+
 # Project libraries
-from bash_purepython.shell.models import EXIT_CODE_COMMAND_NOT_FOUND, HostCall, Redirect
+from bash_purepython.shell import session as session_module
+from bash_purepython.shell.models import EXIT_CODE_COMMAND_NOT_FOUND, HostCall, HostCommand, Redirect
 from bash_purepython.shell.session import ShellSession
 
 
@@ -145,11 +150,28 @@ def test_set_last_exit_code_is_visible_as_question_mark(session: ShellSession) -
     assert result.stdout == "42\n"
 
 
-def test_run_line_terminates_an_endless_pipeline_source(session: ShellSession) -> None:
-    """Check that yes piped into head produces only the requested lines"""
+def test_run_line_reports_a_stage_that_exceeds_the_pipe_limit(
+    session: ShellSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that filling the pipe buffer is an error, not a silent truncation"""
+    monkeypatch.setattr(session_module, "OUTPUT_LIMIT_BYTES", 1 << 16)
+
+    result = session.run_line("yes")
+
+    assert result.exit_code == 1
+    assert "output exceeded" in result.stderr
+
+
+def test_run_line_still_feeds_a_truncated_stage_downstream(
+    session: ShellSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that head gets its lines from a producer that hit the pipe limit"""
+    monkeypatch.setattr(session_module, "OUTPUT_LIMIT_BYTES", 1 << 16)
+
     result = session.run_line("yes | head -3")
 
     assert result.stdout == "y\ny\ny\n"
+    assert "output exceeded" in result.stderr
 
 
 def test_run_line_passes_binary_data_through_a_pipeline(session: ShellSession, shell_home: Path) -> None:
@@ -180,3 +202,124 @@ def test_run_line_result_carries_the_environment(session: ShellSession) -> None:
     result = session.run_line("true")
 
     assert result.environment["USER"] == "guest"
+
+
+def test_run_line_resolves_question_mark_per_pipeline(session: ShellSession) -> None:
+    """Check that $? on the same line sees the command just before it"""
+    result = session.run_line("false; echo $?; true; echo $?")
+
+    assert result.stdout == "1\n0\n"
+
+
+def test_run_line_treats_a_line_that_expands_to_nothing_as_a_no_op(session: ShellSession) -> None:
+    """Check that an unset variable alone runs nothing and succeeds"""
+    session.run_line("false")
+
+    result = session.run_line("$UNSET_VARIABLE")
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+
+
+def test_run_line_names_unsupported_stderr_redirection(session: ShellSession) -> None:
+    """Check that 2> is refused with a message about stderr rather than a wrong command"""
+    result = session.run_line("ls 2>/dev/null")
+
+    assert result.exit_code == 2
+    assert "stderr redirection" in result.stderr
+
+
+def test_run_line_streams_output_to_the_sink_as_it_is_written(shell_home: Path) -> None:
+    """Check that with a sink the result carries no text and the sink gets every chunk in order"""
+    received: list[tuple[str, str]] = []
+    session = ShellSession(
+        home=str(shell_home),
+        host_commands=(),
+        environment={},
+        output_sink=lambda kind, text: received.append((kind, text)),
+    )
+
+    result = session.run_line("echo one; cat missing.txt; echo two")
+
+    assert result.stdout == ""
+    assert result.stderr == ""
+    kinds_in_order = [kind for index, (kind, _) in enumerate(received) if index == 0 or received[index - 1][0] != kind]
+    assert kinds_in_order == ["stdout", "stderr", "stdout"]
+    assert "".join(text for kind, text in received if kind == "stdout") == "one\ntwo\n"
+    assert "missing.txt" in "".join(text for kind, text in received if kind == "stderr")
+
+
+def test_run_line_sends_shell_errors_to_the_sink(shell_home: Path) -> None:
+    """Check that a syntax error reaches the sink on stderr when one is set"""
+    received: list[tuple[str, str]] = []
+    session = ShellSession(
+        home=str(shell_home),
+        host_commands=(),
+        environment={},
+        output_sink=lambda kind, text: received.append((kind, text)),
+    )
+
+    result = session.run_line("echo 'open")
+
+    assert result.stderr == ""
+    assert received[0][0] == "stderr"
+    assert "unterminated" in received[0][1]
+
+
+def test_run_line_only_sends_the_last_stage_to_the_sink(shell_home: Path) -> None:
+    """Check that an intermediate stage's output feeds the pipe, not the sink"""
+    received: list[str] = []
+    session = ShellSession(
+        home=str(shell_home), host_commands=(), environment={}, output_sink=lambda _kind, text: received.append(text)
+    )
+
+    session.run_line("echo abc | tr a b")
+
+    assert "".join(received) == "bbc\n"
+
+
+def test_run_line_writes_a_redirect_without_touching_the_sink(shell_home: Path) -> None:
+    """Check that a redirected command's output lands only in its file"""
+    received: list[str] = []
+    session = ShellSession(
+        home=str(shell_home), host_commands=(), environment={}, output_sink=lambda _kind, text: received.append(text)
+    )
+
+    session.run_line("echo saved > out.txt")
+
+    assert received == []
+    assert (shell_home / "out.txt").read_text() == "saved\n"
+
+
+def test_run_line_result_environment_holds_only_seeded_and_exported_variables(shell_home: Path) -> None:
+    """Check that process-level variables and PWD do not leak into the result"""
+    session = ShellSession(home=str(shell_home), host_commands=(), environment={"USER": "guest"})
+    os.environ["LEAKED_PROCESS_VARIABLE"] = "1"
+
+    session.run_line("export KEPT=yes")
+    result = session.run_line("true")
+
+    assert result.environment == {"KEPT": "yes", "USER": "guest"}
+
+
+def test_run_line_uses_an_exported_home_for_tilde_and_cd(session: ShellSession, shell_home: Path) -> None:
+    """Check that changing HOME moves where ~ and a bare cd go"""
+    (shell_home / "other").mkdir()
+    session.run_line(f"export HOME={shell_home.as_posix()}/other")
+
+    tilde = session.run_line("echo ~")
+    session.run_line("cd")
+
+    assert Path(tilde.stdout.strip()) == shell_home / "other"
+    assert Path(session.run_line("pwd").stdout.strip()) == shell_home / "other"
+
+
+def test_run_line_resolves_question_mark_in_a_host_call(shell_home: Path) -> None:
+    """Check that a host command's arguments see the last exit code"""
+    session = ShellSession(home=str(shell_home), host_commands=(HostCommand("vim", ""),), environment={})
+    session.run_line("false")
+
+    result = session.run_line("vim $?")
+
+    assert result.host_call is not None
+    assert result.host_call.argv == ("vim", "1")

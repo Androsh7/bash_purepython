@@ -93,3 +93,16 @@ def test_feed_repl_and_complete_repl_round_trip(started_bridge: str) -> None:
 
     assert fed == {"status": "done"}
     assert completed["replacement"] == "zeta_value"
+
+
+def test_set_output_sink_streams_the_next_lines(started_bridge: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check that a sink set on the bridge receives output and empties the result"""
+    received: list[tuple[str, str]] = []
+    monkeypatch.setattr(bridge, "OUTPUT_SINK", None)
+    bridge.set_output_sink(lambda kind, text: received.append((kind, text)))
+
+    result = json.loads(bridge.run_line(json.dumps({"line": "echo streamed"})))
+
+    assert result["stdout"] == ""
+    assert {kind for kind, _ in received} == {"stdout"}
+    assert "".join(text for _, text in received) == "streamed\n"

@@ -8,9 +8,11 @@ import json
 from bash_purepython.shell.models import DEFAULT_TERMINAL_COLUMNS, HostCommand, ShellError
 from bash_purepython.shell.repl import ReplSession
 from bash_purepython.shell.session import ShellSession
+from bash_purepython.shell.streams import OutputSink
 
 SHELL_SESSION: ShellSession | None = None
 REPL_SESSION: ReplSession | None = None
+OUTPUT_SINK: OutputSink | None = None
 
 
 class ShellNotStartedError(ShellError):
@@ -36,6 +38,18 @@ def current_repl() -> ReplSession:
     return REPL_SESSION
 
 
+def set_output_sink(sink: OutputSink | None) -> None:
+    """Choose where a running line's output streams, for shells started afterwards
+
+    Args:
+        sink: A callable taking (kind, text), or None to collect output in the result
+    """
+    global OUTPUT_SINK
+    OUTPUT_SINK = sink
+    if SHELL_SESSION is not None:
+        SHELL_SESSION.output_sink = sink
+
+
 def start_shell(payload_json: str) -> str:
     """Create the shell session from a JSON payload
 
@@ -56,6 +70,7 @@ def start_shell(payload_json: str) -> str:
         environment=payload.get("environment", {}),
         history=payload.get("history", []),
         columns=payload.get("columns") or DEFAULT_TERMINAL_COLUMNS,
+        output_sink=OUTPUT_SINK,
     )
     return json.dumps({"command_names": SHELL_SESSION.all_command_names()})
 

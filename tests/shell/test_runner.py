@@ -7,8 +7,14 @@ import io
 import pytest
 
 # Project libraries
-from bash_purepython.shell.models import OUTPUT_LIMIT_BYTES, CommandNotFoundError
-from bash_purepython.shell.runner import command_help_text, exit_code_from_system_exit, run_command
+from bash_purepython.shell.models import CommandNotFoundError
+from bash_purepython.shell.runner import (
+    command_help_text,
+    exit_code_from_system_exit,
+    run_command,
+    run_command_on_streams,
+)
+from bash_purepython.shell.streams import OutputCapture, make_stdin
 
 
 def test_run_command_captures_stdout_and_succeeds() -> None:
@@ -42,12 +48,15 @@ def test_run_command_preserves_bytes_written_through_the_buffer() -> None:
     assert output.stdout == b"\xff\x00\x01"
 
 
-def test_run_command_stops_an_endless_writer_at_the_output_limit() -> None:
-    """Check that yes terminates cleanly once the capture is full"""
-    output = run_command("yes", ["yes"], b"")
+def test_run_command_on_streams_stops_an_endless_writer_when_the_capture_is_full() -> None:
+    """Check that yes stops once its stdout refuses more bytes, and the capture says so"""
+    capture = OutputCapture(limit_bytes=1 << 16)
 
-    assert output.exit_code == 0
-    assert 0 < len(output.stdout) <= OUTPUT_LIMIT_BYTES
+    exit_code = run_command_on_streams("yes", ["yes"], make_stdin(b""), capture.stream, OutputCapture().stream)
+
+    assert exit_code == 0
+    assert capture.overflowed
+    assert 0 < len(capture.getvalue()) <= 1 << 16
 
 
 def test_run_command_reports_argparse_errors_on_stderr() -> None:

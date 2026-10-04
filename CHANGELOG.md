@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ReplSession`, an interactive Python session with CPython-style Tab handling:
   indent on a blank prefix, otherwise complete names with `rlcompleter`
 - `bash_purepython.shell.bridge`, a JSON facade for hosts such as Pyodide
+- An output sink: with one set, the last command's stdout and every stderr stream to
+  the host as they are written instead of being collected, redirected output goes
+  straight to the file, and a `KeyboardInterrupt` raised in a command exits 130
+- `$?` is resolved per pipeline, so `false; echo $?` prints 1 on the same line
+- `cd -` returns to the previous directory and fails when there is none
+- `2>`, `2>&1`, `>&` and `&>` are refused with a message naming stderr redirection
 - Behavioural tests for the shell under `tests/shell`
 
 ### Changed
@@ -32,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command in a pipeline was fed to the next; they now write to stderr
 - `help` listed subpackages as if they were commands
 - The wheel only packaged the top-level package, so subpackages were left out
+- Inside double quotes a backslash escaped every character; it now escapes only `$`,
+  `"`, `\` and backtick, so `grep "\.txt"` keeps its backslash
+- A pipe buffer that reached its limit (now 256 MiB) truncated silently with exit 0;
+  it is now an error on stderr with exit 1
+- A line that expanded to nothing was a syntax error instead of a no-op
+- The result environment carried every process variable and a stale `PWD`; it now
+  holds only variables the shell was seeded with or exported, and `HOME` is honoured
+  by `cd` and `~` when exported
+- Completion of a bare `~` and of `$VAR/...` paths
+- The REPL is built on `code.InteractiveInterpreter`: tracebacks show only the user's
+  frames, `exit` inside a block is code, a `KeyboardInterrupt` is reported rather than
+  propagated, and partial output is flushed before each reply
 
 ## 0.2.0
 

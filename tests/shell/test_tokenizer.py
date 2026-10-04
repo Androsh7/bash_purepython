@@ -4,7 +4,7 @@
 import pytest
 
 # Project libraries
-from bash_purepython.shell.models import ShellSyntaxError, Token, TokenKind
+from bash_purepython.shell.models import LAST_EXIT_CODE_PLACEHOLDER, ShellSyntaxError, Token, TokenKind
 from bash_purepython.shell.tokenizer import tokenize
 
 HOME = "/home/user"
@@ -24,6 +24,8 @@ def words(*values: str) -> list[Token]:
         ("echo 'a $X b'", words("echo", "a $X b")),
         ('echo "hi $X"', words("echo", "hi 1")),
         ('echo "\\$X"', words("echo", "$X")),
+        ('echo "\\.txt"', words("echo", "\\.txt")),
+        ('echo "a\\\\b"', words("echo", "a\\b")),
         ("echo $X", words("echo", "1")),
         ("echo ${X}y", words("echo", "1y")),
         ("echo $MISSING.", words("echo", ".")),
@@ -38,6 +40,8 @@ def words(*values: str) -> list[Token]:
         "single-quotes-literal",
         "double-quotes-expand",
         "escaped-dollar",
+        "plain-backslash-kept",
+        "escaped-backslash",
         "variable",
         "braced-variable",
         "unknown-variable",
@@ -72,11 +76,11 @@ def test_tokenize_expands_only_a_bare_leading_tilde(line: str, expected: list[To
     assert tokens == expected
 
 
-def test_tokenize_expands_question_mark_to_last_exit_code() -> None:
-    """Check that $? carries the previous exit code"""
-    tokens = tokenize("echo $?", ENVIRONMENT, HOME, last_exit_code=3)
+def test_tokenize_marks_question_mark_for_the_session_to_resolve() -> None:
+    """Check that $? becomes the placeholder the session fills in per pipeline"""
+    tokens = tokenize("echo $?", ENVIRONMENT, HOME)
 
-    assert tokens == words("echo", "3")
+    assert tokens == words("echo", LAST_EXIT_CODE_PLACEHOLDER)
 
 
 @pytest.mark.parametrize(
@@ -106,4 +110,15 @@ def test_tokenize_recognises_operators_without_spaces(line: str, expected: list[
 def test_tokenize_raises_on_invalid_syntax(line: str) -> None:
     """Check that an open quote or a lone ampersand is a syntax error"""
     with pytest.raises(ShellSyntaxError):
+        tokenize(line, ENVIRONMENT, HOME)
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["ls 2>/dev/null", "ls 2>&1 | wc -l", "ls &>out", "ls >&2"],
+    ids=["descriptor", "merge", "both", "to-descriptor"],
+)
+def test_tokenize_rejects_stderr_redirection_by_name(line: str) -> None:
+    """Check that every stderr redirection form is refused with a message that names it"""
+    with pytest.raises(ShellSyntaxError, match="stderr redirection"):
         tokenize(line, ENVIRONMENT, HOME)

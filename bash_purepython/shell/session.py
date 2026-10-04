@@ -4,6 +4,7 @@
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TextIO
 
 # Project libraries
 from bash_purepython.shell import completion
@@ -13,28 +14,42 @@ from bash_purepython.shell.models import (
     DEFAULT_TERMINAL_COLUMNS,
     EXIT_CODE_COMMAND_NOT_FOUND,
     EXIT_CODE_FAILURE,
+    EXIT_CODE_INTERRUPTED,
     EXIT_CODE_SUCCESS,
     EXIT_CODE_SYNTAX_ERROR,
     HISTORY_LIMIT_ENTRIES,
+    LAST_EXIT_CODE_PLACEHOLDER,
+    OUTPUT_LIMIT_BYTES,
     ChainOperator,
     CommandKind,
     CommandList,
     CommandNotFoundError,
-    CommandOutput,
     CompletionResult,
     HostCall,
     HostCommand,
     HostCommandPlacementError,
     Pipeline,
+    Redirect,
     RunResult,
     ShellSyntaxError,
     SimpleCommand,
 )
 from bash_purepython.shell.parser import parse
-from bash_purepython.shell.runner import STREAM_ENCODING, OutputCapture, make_stdin, run_command
+from bash_purepython.shell.runner import run_command_on_streams
+from bash_purepython.shell.streams import (
+    STDERR_KIND,
+    STDOUT_KIND,
+    STREAM_ENCODING,
+    OutputCapture,
+    OutputSink,
+    make_sink_stream,
+    make_stdin,
+    wrap_binary,
+)
 from bash_purepython.shell.tokenizer import tokenize
 
 SHELL_NAME = "ash7"
+SHELL_STATE_VARIABLES = frozenset({"PWD", "OLDPWD"})
 
 
 class ShellSession:
@@ -47,24 +62,38 @@ class ShellSession:
         environment: Mapping[str, str],
         history: Sequence[str] = (),
         columns: int = DEFAULT_TERMINAL_COLUMNS,
+        output_sink: OutputSink | None = None,
     ):
         """Seed the process environment and remember the host's commands
 
+        With an output sink, the last command's stdout and every command's stderr are
+        handed to it as they are written and the RunResult carries no text. Without
+        one they are collected and returned
+
         Args:
-            home: The directory ~ and a bare cd refer to
+            home: The directory ~ and a bare cd refer to unless HOME says otherwise
             host_commands: The commands the embedding host runs itself
             environment: Variables to set before the first line runs
             history: Previously run lines, oldest first
             columns: The terminal width used to lay out listings
+            output_sink: Where to stream output, or None to collect it
         """
-        self.home = home
+        self._default_home = home
         self.host_commands = tuple(host_commands)
         self.columns = columns
+        self.output_sink = output_sink
         self.last_exit_code = EXIT_CODE_SUCCESS
         self._history = list(history)[-HISTORY_LIMIT_ENTRIES:]
-        os.environ.update(environment)
+        self._exported_names: set[str] = set(environment) - SHELL_STATE_VARIABLES
+        os.environ.update({name: value for name, value in environment.items() if name not in SHELL_STATE_VARIABLES})
         os.environ.setdefault("HOME", home)
         os.environ["PWD"] = str(Path.cwd())
+        os.environ.pop("OLDPWD", None)
+
+    @property
+    def home(self) -> str:
+        """Return the directory ~ stands for, HOME if set and the seeded default otherwise"""
+        return os.environ.get("HOME") or self._default_home
 
     @property
     def history(self) -> tuple[str, ...]:
@@ -94,6 +123,18 @@ class ShellSession:
             return CommandKind.PACKAGE
         return None
 
+    def register_exported(self, name: str) -> None:
+        """Mark a variable as one the host should see and keep
+
+        Args:
+            name: The variable name
+        """
+        self._exported_names.add(name)
+
+    def exported_environment(self) -> dict[str, str]:
+        """Return the variables the shell was seeded with or exported since, with their current values"""
+        return {name: os.environ[name] for name in sorted(self._exported_names) if name in os.environ}
+
     def record_history(self, line: str) -> None:
         """Remember a line unless it repeats the previous one, dropping the oldest past the limit
 
@@ -121,8 +162,9 @@ class ShellSession:
             columns: The current terminal width, if it changed
 
         Returns:
-            The combined output, the final exit code, the resulting cwd and environment, and
-            the host call to make instead when the line names a host command
+            The collected output when there is no sink, the final exit code, the resulting
+            cwd and environment, and the host call to make instead when the line names a
+            host command
         """
         if columns is not None:
             self.columns = columns
@@ -131,7 +173,11 @@ class ShellSession:
             return self._result("", "", self.last_exit_code)
         self.record_history(stripped)
         try:
-            command_list = parse(tokenize(line, os.environ, self.home, self.last_exit_code))
+            tokens = tokenize(line, os.environ, self.home)
+            if not tokens:
+                self.last_exit_code = EXIT_CODE_SUCCESS
+                return self._result("", "", self.last_exit_code)
+            command_list = parse(tokens)
             host_call = host_call_for(command_list, self.host_command_names)
         except ShellSyntaxError as error:
             self.last_exit_code = EXIT_CODE_SYNTAX_ERROR
@@ -140,19 +186,8 @@ class ShellSession:
             self.last_exit_code = EXIT_CODE_FAILURE
             return self._result("", f"{SHELL_NAME}: {error}\n", self.last_exit_code)
         if host_call is not None:
-            return self._result("", "", self.last_exit_code, host_call)
-        stdout_parts: list[bytes] = []
-        stderr_parts: list[bytes] = []
-        exit_code = self.last_exit_code
-        for position, pipeline in enumerate(command_list.pipelines):
-            if position > 0 and not should_run_after(command_list.operators[position - 1], exit_code):
-                continue
-            output = self._run_pipeline(pipeline)
-            stdout_parts.append(output.stdout)
-            stderr_parts.append(output.stderr)
-            exit_code = output.exit_code
-        self.last_exit_code = exit_code
-        return self._result(decode(b"".join(stdout_parts)), decode(b"".join(stderr_parts)), exit_code)
+            return self._result("", "", self.last_exit_code, resolve_exit_code_in_call(host_call, self.last_exit_code))
+        return self._run_command_list(command_list)
 
     def complete(self, line: str, cursor: int) -> CompletionResult:
         """Return the completion for the word under the cursor
@@ -168,10 +203,37 @@ class ShellSession:
             package_names=list_command_names(),
             host_names=self.host_command_names,
             home=self.home,
+            environment=os.environ,
         )
 
+    def _run_command_list(self, command_list: CommandList) -> RunResult:
+        """Run the pipelines of a line in order, honouring the operators between them
+
+        Args:
+            command_list: The parsed line
+
+        Returns:
+            The result of the whole line
+        """
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
+        exit_code = self.last_exit_code
+        try:
+            for position, pipeline in enumerate(command_list.pipelines):
+                if position > 0 and not should_run_after(command_list.operators[position - 1], exit_code):
+                    continue
+                stdout_bytes, stderr_bytes, exit_code = self._run_pipeline(resolve_exit_code(pipeline, exit_code))
+                stdout_parts.append(stdout_bytes)
+                stderr_parts.append(stderr_bytes)
+        except KeyboardInterrupt:
+            exit_code = EXIT_CODE_INTERRUPTED
+        self.last_exit_code = exit_code
+        return self._result(decode(b"".join(stdout_parts)), decode(b"".join(stderr_parts)), exit_code)
+
     def _result(self, stdout: str, stderr: str, exit_code: int, host_call: HostCall | None = None) -> RunResult:
-        """Return a result carrying the current cwd and environment
+        """Return a result carrying the current cwd and the exported environment
+
+        With a sink, stderr text produced by the shell itself is sent there instead of returned
 
         Args:
             stdout: Everything the line wrote to standard output
@@ -179,79 +241,98 @@ class ShellSession:
             exit_code: The line's final exit code
             host_call: The host command to run instead, if any
         """
+        if self.output_sink is not None and stderr:
+            self.output_sink(STDERR_KIND, stderr)
+            stderr = ""
         return RunResult(
             stdout=stdout,
             stderr=stderr,
             exit_code=exit_code,
             cwd=str(Path.cwd()),
-            environment=dict(os.environ),
+            environment=self.exported_environment(),
             host_call=host_call,
         )
 
-    def _run_pipeline(self, pipeline: Pipeline) -> CommandOutput:
+    def _run_pipeline(self, pipeline: Pipeline) -> tuple[bytes, bytes, int]:
         """Run each command with the previous one's output as its input
+
+        The last command's stdout and every stderr go to the sink when there is one;
+        otherwise they are collected. A redirected command writes straight to its file
 
         Args:
             pipeline: The commands to chain
 
         Returns:
-            The last command's output after redirection, every command's stderr, and the last exit code
+            The collected stdout, the collected stderr, and the last exit code
         """
         stdin_data = b""
+        stdout_parts: list[bytes] = []
         stderr_parts: list[bytes] = []
         exit_code = EXIT_CODE_SUCCESS
-        for command in pipeline.commands:
-            output = self._run_simple_command(command, stdin_data)
-            stderr_parts.append(output.stderr)
-            exit_code = output.exit_code
-            stdin_data = output.stdout
+        last_position = len(pipeline.commands) - 1
+        for position, command in enumerate(pipeline.commands):
+            stdin = make_stdin(stdin_data)
+            stdin_data = b""
+            stderr_capture = None if self.output_sink else OutputCapture()
+            stderr = make_sink_stream(self.output_sink, STDERR_KIND) if self.output_sink else stderr_capture.stream
+            stdout_capture = None
+            redirect_failed = False
             if command.redirect is not None:
-                redirect_error = write_redirect(command.redirect.target, command.redirect.append, stdin_data)
-                stdin_data = b""
-                if redirect_error:
-                    stderr_parts.append(redirect_error.encode(STREAM_ENCODING))
-                    exit_code = EXIT_CODE_FAILURE
-        return CommandOutput(stdout=stdin_data, stderr=b"".join(stderr_parts), exit_code=exit_code)
+                redirect_stream = open_redirect(command.redirect)
+                redirect_failed = redirect_stream is None
+                if redirect_stream is None:
+                    stderr.write(f"{SHELL_NAME}: {command.redirect.target}: cannot open for writing\n")
+                    stdout_capture = OutputCapture()
+                    stdout = stdout_capture.stream
+                else:
+                    stdout = redirect_stream
+            elif position == last_position and self.output_sink is not None:
+                stdout = make_sink_stream(self.output_sink, STDOUT_KIND)
+            else:
+                stdout_capture = OutputCapture(OUTPUT_LIMIT_BYTES)
+                stdout = stdout_capture.stream
+            try:
+                exit_code = self._run_simple_command(command, stdin, stdout, stderr)
+            finally:
+                stdout.flush()
+                stderr.flush()
+                if command.redirect is not None and not redirect_failed:
+                    stdout.close()
+            if redirect_failed:
+                exit_code = EXIT_CODE_FAILURE
+            if stdout_capture is not None and stdout_capture.overflowed:
+                stderr.write(f"{SHELL_NAME}: {command.name}: output exceeded {OUTPUT_LIMIT_BYTES} bytes\n")
+                exit_code = EXIT_CODE_FAILURE
+            if stderr_capture is not None:
+                stderr_parts.append(stderr_capture.getvalue())
+            if stdout_capture is None or command.redirect is not None:
+                continue
+            if position == last_position:
+                stdout_parts.append(stdout_capture.getvalue())
+            else:
+                stdin_data = stdout_capture.getvalue()
+        return b"".join(stdout_parts), b"".join(stderr_parts), exit_code
 
-    def _run_simple_command(self, command: SimpleCommand, stdin_data: bytes) -> CommandOutput:
-        """Run one builtin or package command
+    def _run_simple_command(self, command: SimpleCommand, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
+        """Run one builtin or package command on the given streams
 
         Args:
             command: The command and its arguments
-            stdin_data: The bytes it reads from standard input
+            stdin: What the command reads
+            stdout: Where its output goes
+            stderr: Where its errors go
 
         Returns:
-            The command's output, or a command-not-found error with exit code 127
+            The exit code, 127 when the command does not exist
         """
         if command.name in BUILTINS:
-            return self._run_builtin(command, stdin_data)
+            context = BuiltinContext(argv=command.argv, stdin=stdin, stdout=stdout, stderr=stderr, session=self)
+            return BUILTINS[command.name](context)
         try:
-            return run_command(command.name, command.argv, stdin_data)
+            return run_command_on_streams(command.name, command.argv, stdin, stdout, stderr)
         except CommandNotFoundError as error:
-            return CommandOutput(
-                stdout=b"", stderr=f"{error}\n".encode(STREAM_ENCODING), exit_code=EXIT_CODE_COMMAND_NOT_FOUND
-            )
-
-    def _run_builtin(self, command: SimpleCommand, stdin_data: bytes) -> CommandOutput:
-        """Run one of the shell's own commands with captured streams
-
-        Args:
-            command: The command and its arguments
-            stdin_data: The bytes it reads from standard input
-
-        Returns:
-            The builtin's output and exit code
-        """
-        stdout_capture, stderr_capture = OutputCapture(), OutputCapture()
-        context = BuiltinContext(
-            argv=command.argv,
-            stdin=make_stdin(stdin_data),
-            stdout=stdout_capture.stream,
-            stderr=stderr_capture.stream,
-            session=self,
-        )
-        exit_code = BUILTINS[command.name](context)
-        return CommandOutput(stdout=stdout_capture.getvalue(), stderr=stderr_capture.getvalue(), exit_code=exit_code)
+            stderr.write(f"{error}\n")
+            return EXIT_CODE_COMMAND_NOT_FOUND
 
 
 def should_run_after(operator: ChainOperator, previous_exit_code: int) -> bool:
@@ -269,6 +350,49 @@ def should_run_after(operator: ChainOperator, previous_exit_code: int) -> bool:
     if operator == ChainOperator.OR:
         return previous_exit_code != EXIT_CODE_SUCCESS
     return True
+
+
+def resolve_exit_code(pipeline: Pipeline, exit_code: int) -> Pipeline:
+    """Return the pipeline with every $? placeholder replaced by the exit code so far
+
+    Args:
+        pipeline: The pipeline about to run
+        exit_code: The status of everything run before it on the line
+
+    Returns:
+        A pipeline whose words and redirect targets carry the number instead
+    """
+    value = str(exit_code)
+    commands = tuple(
+        SimpleCommand(
+            argv=tuple(word.replace(LAST_EXIT_CODE_PLACEHOLDER, value) for word in command.argv),
+            redirect=None
+            if command.redirect is None
+            else Redirect(
+                target=command.redirect.target.replace(LAST_EXIT_CODE_PLACEHOLDER, value),
+                append=command.redirect.append,
+            ),
+        )
+        for command in pipeline.commands
+    )
+    return Pipeline(commands=commands)
+
+
+def resolve_exit_code_in_call(host_call: HostCall, exit_code: int) -> HostCall:
+    """Return the host call with every $? placeholder replaced
+
+    Args:
+        host_call: The call about to be handed to the host
+        exit_code: The last exit code
+
+    Returns:
+        The call with the number in place of the placeholder
+    """
+    resolved = resolve_exit_code(
+        Pipeline(commands=(SimpleCommand(argv=host_call.argv, redirect=host_call.redirect),)), exit_code
+    )
+    command = resolved.commands[0]
+    return HostCall(name=host_call.name, argv=command.argv, redirect=command.redirect)
 
 
 def host_call_for(command_list: CommandList, host_names: Sequence[str]) -> HostCall | None:
@@ -296,23 +420,20 @@ def host_call_for(command_list: CommandList, host_names: Sequence[str]) -> HostC
     return None
 
 
-def write_redirect(target: str, append: bool, data: bytes) -> str:
-    """Write a pipeline's output to its redirect target
+def open_redirect(redirect: Redirect) -> TextIO | None:
+    """Open a redirect target so a command writes straight into it
 
     Args:
-        target: The file path, relative to the working directory
-        append: Whether to add to the file instead of replacing it
-        data: The bytes to write
+        redirect: The target path and whether to append
 
     Returns:
-        An error line for stderr, or nothing when the write succeeded
+        A writable text stream with a byte buffer, or None if the file cannot be opened
     """
     try:
-        with Path(target).open("ab" if append else "wb") as target_file:
-            target_file.write(data)
-    except OSError as error:
-        return f"{SHELL_NAME}: {target}: {error.strerror}\n"
-    return ""
+        raw = Path(redirect.target).open("ab" if redirect.append else "wb")  # noqa: SIM115
+    except OSError:
+        return None
+    return wrap_binary(raw)
 
 
 def decode(data: bytes) -> str:

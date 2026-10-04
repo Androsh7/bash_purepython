@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 # Project libraries
-from bash_purepython.shell.completion import option_names_from_help, render_word, scan_partial_word
+from bash_purepython.shell.completion import option_names_from_help, render_suffix, scan_partial_word
 from bash_purepython.shell.models import PartialWord, QuoteStyle, WordPosition
 from bash_purepython.shell.session import ShellSession
 
@@ -60,21 +60,22 @@ def test_scan_partial_word_finds_the_word_and_its_position(line: str, expected: 
 
 
 @pytest.mark.parametrize(
-    ("value", "quote", "final", "expected"),
+    ("suffix", "quote", "final", "expected"),
     [
         ("plain", QuoteStyle.NONE, True, "plain "),
         ("has space", QuoteStyle.NONE, True, "has\\ space "),
         ("a|b", QuoteStyle.NONE, False, "a\\|b"),
-        ("~/dir/", QuoteStyle.NONE, False, "~/dir/"),
-        ("has space", QuoteStyle.SINGLE, True, "'has space' "),
-        ("has space", QuoteStyle.SINGLE, False, "'has space"),
-        ('say "hi"', QuoteStyle.DOUBLE, True, '"say \\"hi\\"" '),
+        ("has space", QuoteStyle.SINGLE, True, "has space' "),
+        ("has space", QuoteStyle.SINGLE, False, "has space"),
+        ('say "hi"', QuoteStyle.DOUBLE, True, 'say \\"hi\\"" '),
     ],
-    ids=["plain", "escaped-space", "escaped-pipe", "tilde-kept", "single-final", "single-partial", "double-final"],
+    ids=["plain", "escaped-space", "escaped-pipe", "single-final", "single-partial", "double-final"],
 )
-def test_render_word_reapplies_the_original_quoting(value: str, quote: QuoteStyle, final: bool, expected: str) -> None:
-    """Check that completed text is quoted the way the user started it"""
-    rendered = render_word(value, quote, final)
+def test_render_suffix_continues_the_original_quoting(
+    suffix: str, quote: QuoteStyle, final: bool, expected: str
+) -> None:
+    """Check that appended text is escaped and closed the way the user opened the word"""
+    rendered = render_suffix(suffix, quote, final)
 
     assert rendered == expected
 
@@ -183,3 +184,19 @@ def test_complete_returns_nothing_for_a_missing_directory(session: ShellSession)
 
     assert result.replacement is None
     assert result.listing == ()
+
+
+def test_complete_turns_a_bare_tilde_into_the_home_directory(session: ShellSession) -> None:
+    """Check that ~ alone completes to ~/ so the home directory can be descended"""
+    result = session.complete("ls ~", 4)
+
+    assert result.replacement == "~/"
+
+
+def test_complete_expands_a_variable_for_the_lookup_but_keeps_it_typed(session: ShellSession, shell_home: Path) -> None:
+    """Check that $HOME/ lists the home directory and the replacement still says $HOME"""
+    (shell_home / "documents").mkdir()
+
+    result = session.complete("cd $HOME/doc", 12)
+
+    assert result.replacement == "$HOME/documents/"

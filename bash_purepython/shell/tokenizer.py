@@ -5,20 +5,24 @@ import re
 from collections.abc import Mapping
 
 # Project libraries
-from bash_purepython.shell.models import ShellSyntaxError, Token, TokenKind
+from bash_purepython.shell.models import LAST_EXIT_CODE_PLACEHOLDER, ShellSyntaxError, Token, TokenKind
 
 WHITESPACE = " \t"
 WORD_BREAKERS = WHITESPACE + "|&;>"
+DOUBLE_QUOTE_ESCAPABLE = '$"\\`'
+STDERR_REDIRECTION_MESSAGE = "stderr redirection ({form}) is not supported"
 VARIABLE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$(\?)")
 
 
-def expand_variables(text: str, environment: Mapping[str, str], last_exit_code: int) -> str:
-    """Return the text with every $NAME, ${NAME} and $? reference replaced
+def expand_variables(text: str, environment: Mapping[str, str]) -> str:
+    """Return the text with every $NAME and ${NAME} replaced and $? marked for later
+
+    $? becomes LAST_EXIT_CODE_PLACEHOLDER, which the session resolves just before
+    each pipeline runs so it reflects the command before it on the same line
 
     Args:
         text: The unquoted or double-quoted text to expand
         environment: The variables available for expansion
-        last_exit_code: The value $? expands to
 
     Returns:
         The text with unknown variables replaced by nothing
@@ -26,7 +30,7 @@ def expand_variables(text: str, environment: Mapping[str, str], last_exit_code: 
 
     def replace(match: re.Match[str]) -> str:
         if match.group(3) is not None:
-            return str(last_exit_code)
+            return LAST_EXIT_CODE_PLACEHOLDER
         name = match.group(1) or match.group(2)
         return environment.get(name, "")
 
@@ -58,7 +62,8 @@ def read_operator(line: str, index: int) -> tuple[Token, int]:
         index: The position of the operator's first character
 
     Raises:
-        ShellSyntaxError: If a lone & is found, since background jobs are not supported
+        ShellSyntaxError: If a lone & is found, since background jobs are not supported, or
+            the operator is a form of stderr redirection
 
     Returns:
         The operator token and the position after it
@@ -72,26 +77,29 @@ def read_operator(line: str, index: int) -> tuple[Token, int]:
     if character == "&":
         if following == "&":
             return Token(TokenKind.AND, "&&"), index + 2
+        if following == ">":
+            raise ShellSyntaxError(STDERR_REDIRECTION_MESSAGE.format(form="&>"))
         raise ShellSyntaxError("background jobs are not supported")
     if character == ";":
         return Token(TokenKind.SEMICOLON, ";"), index + 1
+    if following == "&":
+        raise ShellSyntaxError(STDERR_REDIRECTION_MESSAGE.format(form=">&"))
     if following == ">":
         return Token(TokenKind.REDIRECT_APPEND, ">>"), index + 2
     return Token(TokenKind.REDIRECT_WRITE, ">"), index + 1
 
 
-def read_word(line: str, index: int, environment: Mapping[str, str], home: str, last_exit_code: int) -> tuple[str, int]:
+def read_word(line: str, index: int, environment: Mapping[str, str], home: str) -> tuple[str, int]:
     """Return the word starting at index with quoting resolved, and the index just past it
 
     Only unquoted and double-quoted text is variable-expanded, and only a bare unquoted
-    leading ~ means home
+    leading ~ means home. Inside double quotes a backslash escapes only $, ", backslash and backtick
 
     Args:
         line: The whole command line
         index: The position of the word's first character
         environment: The variables available for expansion
         home: The directory a bare ~ stands for
-        last_exit_code: The value $? expands to
 
     Raises:
         ShellSyntaxError: If a quote is left open at the end of the line
@@ -105,7 +113,7 @@ def read_word(line: str, index: int, environment: Mapping[str, str], home: str, 
 
     def flush_plain() -> str:
         nonlocal plain
-        expanded = expand_variables(plain, environment, last_exit_code)
+        expanded = expand_variables(plain, environment)
         plain = ""
         return expanded
 
@@ -125,7 +133,7 @@ def read_word(line: str, index: int, environment: Mapping[str, str], home: str, 
             value += flush_plain()
             index += 1
             while index < len(line) and line[index] != '"':
-                if line[index] == "\\" and index + 1 < len(line):
+                if line[index] == "\\" and index + 1 < len(line) and line[index + 1] in DOUBLE_QUOTE_ESCAPABLE:
                     value += flush_plain()
                     value += line[index + 1]
                     index += 2
@@ -148,17 +156,16 @@ def read_word(line: str, index: int, environment: Mapping[str, str], home: str, 
     return (expand_tilde(value, home) if bare_tilde else value), index
 
 
-def tokenize(line: str, environment: Mapping[str, str], home: str, last_exit_code: int = 0) -> list[Token]:
+def tokenize(line: str, environment: Mapping[str, str], home: str) -> list[Token]:
     """Return the words and operators of a command line
 
     Args:
         line: The command line as typed
         environment: The variables available for expansion
         home: The directory a bare ~ stands for
-        last_exit_code: The value $? expands to
 
     Raises:
-        ShellSyntaxError: If a quote is left open or a lone & appears
+        ShellSyntaxError: If a quote is left open, a lone & appears, or stderr is redirected
 
     Returns:
         The tokens in order, with quoting and expansion already applied to words
@@ -175,8 +182,11 @@ def tokenize(line: str, environment: Mapping[str, str], home: str, last_exit_cod
             tokens.append(token)
             continue
         start = index
-        value, index = read_word(line, index, environment, home, last_exit_code)
-        was_quoted = any(quote in line[start:index] for quote in "'\"\\")
+        value, index = read_word(line, index, environment, home)
+        raw = line[start:index]
+        was_quoted = any(quote in raw for quote in "'\"\\")
+        if raw.isdigit() and index < len(line) and line[index] == ">":
+            raise ShellSyntaxError(STDERR_REDIRECTION_MESSAGE.format(form=f"{raw}>"))
         if value or was_quoted:
             tokens.append(Token(TokenKind.WORD, value))
     return tokens

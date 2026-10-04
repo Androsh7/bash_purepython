@@ -17,7 +17,7 @@ def test_cd_changes_the_working_directory_and_pwd(session: ShellSession, shell_h
 
     assert result.exit_code == 0
     assert Path(result.cwd) == shell_home / "sub"
-    assert Path(result.environment["PWD"]) == shell_home / "sub"
+    assert Path(session.run_line("echo $PWD").stdout.strip()) == shell_home / "sub"
 
 
 def test_cd_without_arguments_goes_home(session: ShellSession, shell_home: Path) -> None:
@@ -37,6 +37,15 @@ def test_cd_dash_returns_to_the_previous_directory(session: ShellSession, shell_
 
     result = session.run_line("cd -")
 
+    assert Path(result.cwd) == shell_home
+
+
+def test_cd_dash_fails_before_any_directory_change(session: ShellSession, shell_home: Path) -> None:
+    """Check that cd - with no previous directory is an error and stays put"""
+    result = session.run_line("cd -")
+
+    assert result.exit_code == 1
+    assert "OLDPWD" in result.stderr
     assert Path(result.cwd) == shell_home
 
 
