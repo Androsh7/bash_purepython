@@ -28,6 +28,7 @@ from bash_purepython.shell.models import (
     HostCall,
     HostCommand,
     HostCommandPlacementError,
+    IncompleteInputError,
     Pipeline,
     RawPipeline,
     RawWord,
@@ -36,7 +37,7 @@ from bash_purepython.shell.models import (
     ShellSyntaxError,
     SimpleCommand,
 )
-from bash_purepython.shell.parser import parse
+from bash_purepython.shell.parser import parse_text
 from bash_purepython.shell.runner import run_command_on_streams
 from bash_purepython.shell.streams import (
     STDERR_KIND,
@@ -48,7 +49,7 @@ from bash_purepython.shell.streams import (
     make_stdin,
     wrap_binary,
 )
-from bash_purepython.shell.tokenizer import expand_word, expand_word_to_arguments, tokenize
+from bash_purepython.shell.tokenizer import expand_variables, expand_word, expand_word_to_arguments
 
 SHELL_NAME = "ash7"
 SHELL_STATE_VARIABLES = frozenset({"PWD", "OLDPWD"})
@@ -195,6 +196,14 @@ class ShellSession:
             redirects = raw_command.redirects
             stdout_target = self._expand_target(redirects.stdout_target, exit_code)
             stderr_target = self._expand_target(redirects.stderr_target, exit_code)
+            stdin_text = None
+            if redirects.heredoc_body is not None and redirects.heredoc_delimiter is not None:
+                quoted_delimiter = any(part.quoted for part in redirects.heredoc_delimiter.parts)
+                stdin_text = (
+                    redirects.heredoc_body
+                    if quoted_delimiter
+                    else expand_variables(redirects.heredoc_body, os.environ, exit_code)
+                )
             if argv:
                 commands.append(
                     SimpleCommand(
@@ -205,6 +214,7 @@ class ShellSession:
                         else Redirect(stderr_target, redirects.stderr_append),
                         stderr_to_stdout=redirects.stderr_to_stdout,
                         stdin_path=self._expand_target(redirects.stdin_source, exit_code),
+                        stdin_text=stdin_text,
                     )
                 )
         return Pipeline(commands=tuple(commands))
@@ -248,7 +258,7 @@ class ShellSession:
             return self._result("", "", self.last_exit_code)
         self.record_history(stripped)
         try:
-            command_list = parse(tokenize(line))
+            command_list = parse_text(line)
             host_call = self._host_call_for(command_list)
         except ShellSyntaxError as error:
             self.last_exit_code = EXIT_CODE_SYNTAX_ERROR
@@ -259,6 +269,23 @@ class ShellSession:
         if host_call is not None:
             return self._result("", "", self.last_exit_code, host_call)
         return self._run_command_list(command_list)
+
+    def needs_more(self, text: str) -> bool:
+        """Return whether the text so far is an unfinished line that should keep reading
+
+        Args:
+            text: The lines entered so far, joined by newlines
+
+        Returns:
+            True for an open quote or a here-document still waiting for its delimiter
+        """
+        try:
+            parse_text(text)
+        except IncompleteInputError:
+            return True
+        except ShellSyntaxError:
+            return False
+        return False
 
     def complete(self, line: str, cursor: int) -> CompletionResult:
         """Return the completion for the word under the cursor
@@ -296,7 +323,12 @@ class ShellSession:
         if len(resolved) == 1 and len(resolved[0].commands) == 1:
             only_command = resolved[0].commands[0]
             if only_command.name in host_names:
-                if only_command.stderr_redirect or only_command.stderr_to_stdout or only_command.stdin_path:
+                if (
+                    only_command.stderr_redirect
+                    or only_command.stderr_to_stdout
+                    or only_command.stdin_path
+                    or only_command.stdin_text is not None
+                ):
                     raise ShellSyntaxError(HOST_REDIRECT_MESSAGE.format(name=only_command.name))
                 return HostCall(name=only_command.name, argv=only_command.argv, redirect=only_command.redirect)
         for pipeline in resolved:
@@ -473,7 +505,9 @@ class ShellSession:
         else:
             stderr_capture = OutputCapture(OUTPUT_LIMIT_BYTES)
             stderr = stderr_capture.stream
-        if command.stdin_path is not None:
+        if command.stdin_text is not None:
+            stdin = make_stdin(command.stdin_text.encode(STREAM_ENCODING))
+        elif command.stdin_path is not None:
             opened = open_input(command.stdin_path)
             if opened is None:
                 close_all(files)

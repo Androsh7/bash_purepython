@@ -4,8 +4,8 @@
 import pytest
 
 # Project libraries
-from bash_purepython.shell.models import ChainOperator, CommandList, RawCommand, ShellSyntaxError
-from bash_purepython.shell.parser import parse
+from bash_purepython.shell.models import ChainOperator, CommandList, IncompleteInputError, RawCommand, ShellSyntaxError
+from bash_purepython.shell.parser import parse, parse_text
 from bash_purepython.shell.tokenizer import expand_word, tokenize
 
 HOME = "/home/user"
@@ -134,3 +134,44 @@ def test_parse_raises_on_misplaced_operators(line: str) -> None:
     """Check that an operator without a command on each side is a syntax error"""
     with pytest.raises(ShellSyntaxError):
         parse_line(line)
+
+
+def test_parse_text_attaches_a_here_document_body() -> None:
+    """Check that the lines up to the delimiter become the command's input"""
+    command_list = parse_text("cat << EOF\nline one\nline two\nEOF")
+
+    redirects = command_list.pipelines[0].commands[0].redirects
+    assert redirects.heredoc_body == "line one\nline two\n"
+
+
+def test_parse_text_feeds_two_here_documents_in_order() -> None:
+    """Check that each << on the line takes the next body"""
+    command_list = parse_text("cat << A | cat << B\nfirst\nA\nsecond\nB")
+
+    bodies = [command.redirects.heredoc_body for command in command_list.pipelines[0].commands]
+    assert bodies == ["first\n", "second\n"]
+
+
+def test_parse_text_strips_leading_tabs_for_dash_form() -> None:
+    """Check that <<- removes leading tabs from body and delimiter lines"""
+    command_list = parse_text("cat <<- EOF\n\tindented\n\tEOF")
+
+    assert command_list.pipelines[0].commands[0].redirects.heredoc_body == "indented\n"
+
+
+def test_parse_text_reports_an_unterminated_here_document_as_incomplete() -> None:
+    """Check that a missing delimiter asks for more input rather than failing"""
+    with pytest.raises(IncompleteInputError):
+        parse_text("cat << EOF\nstill going")
+
+
+def test_parse_text_reports_an_open_quote_as_incomplete() -> None:
+    """Check that a quote spanning lines asks for more input"""
+    with pytest.raises(IncompleteInputError):
+        parse_text('echo "first line')
+
+
+def test_parse_text_rejects_text_after_the_last_here_document() -> None:
+    """Check that stray lines after the delimiter are an error, not silently dropped"""
+    with pytest.raises(ShellSyntaxError, match="unexpected text"):
+        parse_text("cat << EOF\nbody\nEOF\nstray")

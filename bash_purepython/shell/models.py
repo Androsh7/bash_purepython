@@ -30,6 +30,8 @@ class TokenKind(StrEnum):
     REDIRECT_STDERR_TO_STDOUT = "2>&1"
     REDIRECT_BOTH = "&>"
     REDIRECT_INPUT = "<"
+    HEREDOC = "<<"
+    HEREDOC_STRIP_TABS = "<<-"
 
 
 class ChainOperator(StrEnum):
@@ -79,6 +81,10 @@ class ShellError(Exception):
 
 class ShellSyntaxError(ShellError):
     """Signal a line that cannot be tokenized or parsed"""
+
+
+class IncompleteInputError(ShellSyntaxError):
+    """Signal a line that is not finished: an open quote or a here-document without its terminator"""
 
 
 class CommandNotFoundError(ShellError):
@@ -151,6 +157,9 @@ class RawRedirects:
     stderr_append: bool = False
     stderr_to_stdout: bool = False
     stdin_source: RawWord | None = None
+    heredoc_delimiter: RawWord | None = None
+    heredoc_strip_tabs: bool = False
+    heredoc_body: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +216,7 @@ class SimpleCommand:
     stderr_redirect: Redirect | None = None
     stderr_to_stdout: bool = False
     stdin_path: str | None = None
+    stdin_text: str | None = None
 
     def __post_init__(self):
         """Reject a command without a name

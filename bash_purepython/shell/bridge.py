@@ -135,6 +135,19 @@ def completion_for_host(result: CompletionResult, text: str) -> dict[str, object
     return fields
 
 
+def line_needs_more(payload_json: str) -> str:
+    """Report whether the text entered so far should keep reading lines
+
+    Args:
+        payload_json: JSON with text, the lines so far joined by newlines
+
+    Returns:
+        JSON true when a quote or here-document is still open
+    """
+    payload = json.loads(payload_json)
+    return json.dumps(current_shell().needs_more(payload["text"]))
+
+
 def complete_line(payload_json: str) -> str:
     """Complete the word under the cursor of a shell line
 

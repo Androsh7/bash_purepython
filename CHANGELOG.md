@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   straight to the file, and a `KeyboardInterrupt` raised in a command exits 130
 - `$?` is resolved per pipeline, so `false; echo $?` prints 1 on the same line
 - `cd -` returns to the previous directory and fails when there is none
+- Wildcards: unquoted `*`, `?` and `[...]` match files in sorted order, a pattern that matches nothing stays
+  literal, hidden files match only a pattern that names the leading dot, and quoting keeps a pattern literal
+- Here-documents (`cmd << EOF`, `<<-` to strip leading tabs, a quoted delimiter to stop `$VAR` expanding),
+  quoted strings spanning lines, and backslash line continuation. `ShellSession.needs_more` tells a host
+  whether the lines so far are still waiting for a quote or delimiter to close
 - stderr and input redirection: `2> file`, `2>> file`, `2>&1`, `&> file` and `< file`; `1>` is plain stdout, and
   descriptor forms the shell cannot honour (`3>`, `>&2`, `2>&3`) are refused with a message naming them
 - Variables expand per pipeline, so `export FOO=bar; echo $FOO` and `cd sub; echo $PWD` work on one line

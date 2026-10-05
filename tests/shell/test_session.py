@@ -523,3 +523,56 @@ def test_run_line_does_not_expand_wildcards_in_a_redirect_target(session: ShellS
 
     assert (shell_home / "[x].txt").exists()
     assert (shell_home / "x.txt").read_text() == ""
+
+
+def test_run_line_feeds_a_here_document_to_the_command(session: ShellSession) -> None:
+    """Check that cat << EOF prints the lines between"""
+    result = session.run_line("cat << EOF\nThis is line one\nThis is line two\nEOF")
+
+    assert result.stdout == "This is line one\nThis is line two\n"
+    assert result.exit_code == 0
+
+
+def test_run_line_expands_variables_in_an_unquoted_here_document(session: ShellSession) -> None:
+    """Check that $VAR expands in the body unless the delimiter was quoted"""
+    session.run_line("export WHO=world")
+
+    plain = session.run_line("cat << EOF\nhello $WHO\nEOF")
+    quoted = session.run_line("cat << 'EOF'\nhello $WHO\nEOF")
+
+    assert plain.stdout == "hello world\n"
+    assert quoted.stdout == "hello $WHO\n"
+
+
+def test_run_line_accepts_a_quoted_string_spanning_lines(session: ShellSession) -> None:
+    """Check that a newline inside double quotes is part of the argument"""
+    result = session.run_line('echo "first\nsecond"')
+
+    assert result.stdout == "first\nsecond\n"
+
+
+def test_run_line_joins_a_backslash_continued_line(session: ShellSession) -> None:
+    """Check that a backslash before the newline continues the command"""
+    result = session.run_line("echo one \\\ntwo")
+
+    assert result.stdout == "one two\n"
+
+
+def test_needs_more_recognises_unfinished_input(session: ShellSession) -> None:
+    """Check that an open here-document or quote asks for more while complete lines do not"""
+    assert session.needs_more("cat << EOF\nline")
+    assert session.needs_more('echo "open')
+    assert session.needs_more("echo one \\")
+    assert not session.needs_more("cat << EOF\nline\nEOF")
+    assert not session.needs_more("echo done")
+    assert not session.needs_more("ls 3>out")
+
+
+def test_run_line_refuses_a_here_document_on_a_host_command(shell_home: Path) -> None:
+    """Check that a browser command cannot take a here-document"""
+    session = ShellSession(home=str(shell_home), host_commands=(HostCommand("python", ""),), environment={})
+
+    result = session.run_line("python << EOF\nprint(1)\nEOF")
+
+    assert result.exit_code == 2
+    assert "browser commands" in result.stderr

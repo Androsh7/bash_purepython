@@ -1,9 +1,13 @@
 """Group tokens into pipelines joined by chain operators"""
 
+# Standard libraries
+import dataclasses
+
 # Project libraries
 from bash_purepython.shell.models import (
     ChainOperator,
     CommandList,
+    IncompleteInputError,
     RawCommand,
     RawPipeline,
     RawRedirects,
@@ -12,6 +16,7 @@ from bash_purepython.shell.models import (
     Token,
     TokenKind,
 )
+from bash_purepython.shell.tokenizer import split_first_line, tokenize
 
 CHAIN_OPERATORS = {
     TokenKind.AND: ChainOperator.AND,
@@ -25,6 +30,8 @@ REDIRECTS_WITH_TARGET = {
     TokenKind.REDIRECT_STDERR_APPEND,
     TokenKind.REDIRECT_BOTH,
     TokenKind.REDIRECT_INPUT,
+    TokenKind.HEREDOC,
+    TokenKind.HEREDOC_STRIP_TABS,
 }
 
 
@@ -96,14 +103,96 @@ def apply_redirect(redirects: RawRedirects, kind: TokenKind, target: RawWord | N
             stderr_to_stdout=False,
             stdin_source=redirects.stdin_source,
         )
-    return RawRedirects(
-        stdout_target=redirects.stdout_target,
-        stdout_append=redirects.stdout_append,
-        stderr_target=redirects.stderr_target,
-        stderr_append=redirects.stderr_append,
-        stderr_to_stdout=redirects.stderr_to_stdout,
-        stdin_source=target,
+    if kind in (TokenKind.HEREDOC, TokenKind.HEREDOC_STRIP_TABS):
+        return dataclasses.replace(
+            redirects,
+            stdin_source=None,
+            heredoc_delimiter=target,
+            heredoc_strip_tabs=kind == TokenKind.HEREDOC_STRIP_TABS,
+        )
+    return dataclasses.replace(redirects, stdin_source=target, heredoc_delimiter=None)
+
+
+def delimiter_text(word: RawWord) -> str:
+    """Return the literal text of a here-document delimiter, quotes removed
+
+    Args:
+        word: The word after <<
+
+    Returns:
+        The delimiter to look for
+    """
+    return "".join(part.text for part in word.parts)
+
+
+def attach_heredoc_bodies(command_list: CommandList, lines: list[str]) -> CommandList:
+    """Return the list with each << fed the lines up to its delimiter, in order
+
+    Args:
+        command_list: The parsed command line
+        lines: The lines that followed it
+
+    Raises:
+        IncompleteInputError: If a here-document never reaches its delimiter
+        ShellSyntaxError: If lines remain after the last here-document
+
+    Returns:
+        The command list with every heredoc_body filled in
+    """
+    remaining = list(lines)
+    pipelines = []
+    for pipeline in command_list.pipelines:
+        commands = []
+        for command in pipeline.commands:
+            delimiter = command.redirects.heredoc_delimiter
+            if delimiter is None:
+                commands.append(command)
+                continue
+            wanted = delimiter_text(delimiter)
+            strip_tabs = command.redirects.heredoc_strip_tabs
+            body_lines: list[str] = []
+            while True:
+                if not remaining:
+                    raise IncompleteInputError(f"here-document delimited by {wanted} is not terminated")
+                line = remaining.pop(0)
+                if strip_tabs:
+                    line = line.lstrip("\t")
+                if line == wanted:
+                    break
+                body_lines.append(line)
+            body = "".join(line + "\n" for line in body_lines)
+            commands.append(
+                RawCommand(words=command.words, redirects=dataclasses.replace(command.redirects, heredoc_body=body))
+            )
+        pipelines.append(RawPipeline(commands=tuple(commands)))
+    if any(line.strip() for line in remaining):
+        raise ShellSyntaxError("unexpected text after the last here-document")
+    return CommandList(pipelines=tuple(pipelines), operators=command_list.operators)
+
+
+def parse_text(text: str) -> CommandList:
+    """Return the command list for everything the user entered, here-documents included
+
+    Args:
+        text: The command line and any here-document lines, joined by newlines
+
+    Raises:
+        IncompleteInputError: If a quote or here-document is left open
+        ShellSyntaxError: If the text cannot be parsed
+
+    Returns:
+        The parsed line with every here-document body attached
+    """
+    first_line, lines = split_first_line(text)
+    command_list = parse(tokenize(first_line))
+    needs_bodies = any(
+        command.redirects.heredoc_delimiter is not None
+        for pipeline in command_list.pipelines
+        for command in pipeline.commands
     )
+    if not needs_bodies and any(line.strip() for line in lines):
+        raise ShellSyntaxError("unexpected text after the command line")
+    return attach_heredoc_bodies(command_list, lines) if needs_bodies else command_list
 
 
 def parse_simple_command(tokens: list[Token], index: int) -> tuple[RawCommand, int]:

@@ -6,9 +6,10 @@ import re
 from collections.abc import Mapping
 
 # Project libraries
-from bash_purepython.shell.models import RawWord, ShellSyntaxError, Token, TokenKind, WordPart
+from bash_purepython.shell.models import IncompleteInputError, RawWord, ShellSyntaxError, Token, TokenKind, WordPart
 
-WHITESPACE = " \t"
+WHITESPACE = " \t\n"
+LINE_CONTINUATION = "\\\n"
 WORD_BREAKERS = WHITESPACE + "|&;><"
 DOUBLE_QUOTE_ESCAPABLE = '$"\\`'
 VARIABLE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$(\?)")
@@ -168,6 +169,10 @@ def read_operator(line: str, index: int) -> tuple[Token, int]:
     if character == ";":
         return Token(TokenKind.SEMICOLON, ";"), index + 1
     if character == "<":
+        if line.startswith("<<-", index):
+            return Token(TokenKind.HEREDOC_STRIP_TABS, "<<-"), index + 3
+        if following == "<":
+            return Token(TokenKind.HEREDOC, "<<"), index + 2
         return Token(TokenKind.REDIRECT_INPUT, "<"), index + 1
     if following == "&":
         raise ShellSyntaxError(UNSUPPORTED_REDIRECTION_MESSAGE.format(what="stdout to descriptor", form=">&"))
@@ -211,7 +216,7 @@ def read_word(line: str, index: int) -> tuple[RawWord, int]:
             flush_plain()
             closing = line.find("'", index + 1)
             if closing == -1:
-                raise ShellSyntaxError("unterminated single quote")
+                raise IncompleteInputError("unterminated single quote")
             parts.append(WordPart(text=line[index + 1 : closing], quoted=True))
             index = closing + 1
             continue
@@ -227,7 +232,7 @@ def read_word(line: str, index: int) -> tuple[RawWord, int]:
                 plain += line[index]
                 index += 1
             if index >= len(line):
-                raise ShellSyntaxError("unterminated double quote")
+                raise IncompleteInputError("unterminated double quote")
             index += 1
             # Text inside double quotes expands but counts as quoted, so "" and "$UNSET" stay arguments
             if plain:
@@ -246,19 +251,59 @@ def read_word(line: str, index: int) -> tuple[RawWord, int]:
     return RawWord(parts=tuple(parts), bare_tilde=bare_tilde), index
 
 
+def split_first_line(text: str) -> tuple[str, list[str]]:
+    """Return the command line and the lines after it, honouring quotes and continuations
+
+    A newline inside quotes belongs to the word, and a backslash before a newline
+    joins the two lines. The first newline outside both ends the command line; what
+    follows is here-document text
+
+    Args:
+        text: Everything the user entered, lines joined by newlines
+
+    Returns:
+        The command line and the remaining lines
+    """
+    quote = ""
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if quote == "'":
+            if character == "'":
+                quote = ""
+        elif quote == '"':
+            if character == "\\" and index + 1 < len(text) and text[index + 1] in DOUBLE_QUOTE_ESCAPABLE:
+                index += 1
+            elif character == '"':
+                quote = ""
+        elif character == "\\":
+            index += 1
+        elif character in "'\"":
+            quote = character
+        elif character == "\n":
+            return text[:index], text[index + 1 :].split("\n")
+        index += 1
+    return text, []
+
+
 def tokenize(line: str) -> list[Token]:
     """Return the words and operators of a command line, words still unexpanded
+
+    A backslash before a newline continues the line
 
     Args:
         line: The command line as typed
 
     Raises:
-        ShellSyntaxError: If a quote is left open, a lone & appears, or a descriptor other
-            than 1 and 2 is redirected
+        IncompleteInputError: If a quote is left open
+        ShellSyntaxError: If a lone & appears, or a descriptor other than 1 and 2 is redirected
 
     Returns:
         The tokens in order
     """
+    line = line.replace(LINE_CONTINUATION, "")
+    if line.endswith("\\") and not line.endswith("\\\\"):
+        raise IncompleteInputError("line continues after the backslash")
     tokens: list[Token] = []
     index = 0
     while index < len(line):

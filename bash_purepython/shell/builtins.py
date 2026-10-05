@@ -31,6 +31,7 @@ shell:
 wildcards:        *  ?  [abc]   (quote them to keep them literal)
 pipes and lists:  cmd | cmd    a && b    a || b    a ; b
 redirection:      cmd > file   cmd >> file   cmd 2> file   cmd 2>&1   cmd &> file   cmd < file
+here-documents:   cmd << EOF, then lines, then EOF on its own line (quote EOF to stop $VAR expanding)
 """
 
 
