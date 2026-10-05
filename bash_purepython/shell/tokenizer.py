@@ -1,6 +1,7 @@
 """Split a command line into words and operators with bash-style quoting"""
 
 # Standard libraries
+import glob
 import re
 from collections.abc import Mapping
 
@@ -11,6 +12,7 @@ WHITESPACE = " \t"
 WORD_BREAKERS = WHITESPACE + "|&;><"
 DOUBLE_QUOTE_ESCAPABLE = '$"\\`'
 VARIABLE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$(\?)")
+GLOB_CHARACTERS = re.compile(r"[*?\[]")
 STDOUT_DESCRIPTOR = "1"
 STDERR_DESCRIPTOR = "2"
 UNSUPPORTED_REDIRECTION_MESSAGE = "{what} redirection ({form}) is not supported"
@@ -76,6 +78,43 @@ def expand_word(word: RawWord, environment: Mapping[str, str], home: str, last_e
     if not expanded and not any(part.quoted for part in word.parts):
         return None
     return expand_tilde(expanded, home) if word.bare_tilde else expanded
+
+
+def expand_word_to_arguments(
+    word: RawWord, environment: Mapping[str, str], home: str, last_exit_code: int
+) -> list[str]:
+    """Return the arguments a word becomes, after expansion and wildcard matching
+
+    Unquoted *, ? and [...] are matched against the working directory, one argument
+    per match in sorted order; quoted ones are literal. A pattern that matches
+    nothing stays as typed, and hidden entries match only a pattern that names the
+    leading dot, as in bash
+
+    Args:
+        word: The word as the tokenizer saw it
+        environment: The variables available for expansion
+        home: The directory a bare ~ stands for
+        last_exit_code: The value $? expands to
+
+    Returns:
+        The arguments, empty when the word expands to nothing
+    """
+    expanded = expand_word(word, environment, home, last_exit_code)
+    if expanded is None:
+        return []
+    pattern = "".join(
+        expand_variables(part.text, environment, last_exit_code)
+        if part.wildcards
+        else glob.escape(part.text if part.quoted else expand_variables(part.text, environment, last_exit_code))
+        for part in word.parts
+    )
+    if not GLOB_CHARACTERS.search(pattern):
+        return [expanded]
+    if word.bare_tilde:
+        pattern = expand_tilde(pattern, home)
+    # glob.glob rather than Path.glob: a pattern after ~ or a variable may be absolute
+    matches = sorted(glob.glob(pattern))  # noqa: PTH207
+    return matches if matches else [expanded]
 
 
 def read_stderr_redirect(line: str, index: int) -> tuple[Token, int]:
@@ -161,7 +200,7 @@ def read_word(line: str, index: int) -> tuple[RawWord, int]:
     def flush_plain() -> None:
         nonlocal plain
         if plain:
-            parts.append(WordPart(text=plain, quoted=False))
+            parts.append(WordPart(text=plain, quoted=False, wildcards=True))
             plain = ""
 
     while index < len(line):

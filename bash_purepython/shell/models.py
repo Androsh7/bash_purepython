@@ -113,10 +113,15 @@ class OutputLimitExceededError(BrokenPipeError):
 
 @dataclass(frozen=True, slots=True)
 class WordPart:
-    """Hold a run of a word's text and whether quoting protects it from expansion"""
+    """Hold a run of a word's text and how much expansion its quoting allows
+
+    Bare text takes variables and wildcards, double-quoted text takes variables
+    only, and single-quoted or escaped text is literal
+    """
 
     text: str
     quoted: bool
+    wildcards: bool = False
 
 
 @dataclass(frozen=True, slots=True)

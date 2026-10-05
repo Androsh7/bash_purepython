@@ -1,11 +1,14 @@
 """Tests for the command line tokenizer and word expansion"""
 
+# Standard libraries
+from pathlib import Path
+
 # Third-party libraries
 import pytest
 
 # Project libraries
 from bash_purepython.shell.models import ShellSyntaxError, TokenKind
-from bash_purepython.shell.tokenizer import expand_word, tokenize
+from bash_purepython.shell.tokenizer import expand_word, expand_word_to_arguments, tokenize
 
 HOME = "/home/user"
 ENVIRONMENT = {"X": "1", "NAME": "world"}
@@ -149,3 +152,73 @@ def test_tokenize_rejects_descriptor_redirection_by_name(line: str, expected_mes
     """Check that descriptor forms the shell cannot honour are refused with a message that names them"""
     with pytest.raises(ShellSyntaxError, match=expected_message):
         tokenize(line)
+
+
+def arguments_of(line: str, environment: dict[str, str] | None = None) -> list[str]:
+    """Return every argument the words of a line become, wildcards included"""
+    arguments: list[str] = []
+    for token in tokenize(line):
+        if token.word is not None:
+            arguments.extend(expand_word_to_arguments(token.word, environment or ENVIRONMENT, HOME, 0))
+    return arguments
+
+
+def test_expand_word_to_arguments_matches_files_in_sorted_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that an unquoted star becomes one argument per matching file"""
+    monkeypatch.chdir(tmp_path)
+    for name in ("b.txt", "a.txt", "c.log"):
+        (tmp_path / name).write_text("")
+
+    assert arguments_of("echo *.txt") == ["echo", "a.txt", "b.txt"]
+
+
+def test_expand_word_to_arguments_keeps_a_pattern_with_no_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that a star that matches nothing is passed through as typed"""
+    monkeypatch.chdir(tmp_path)
+
+    assert arguments_of("echo *.none") == ["echo", "*.none"]
+
+
+def test_expand_word_to_arguments_leaves_quoted_wildcards_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that quoting a wildcard keeps it literal"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("")
+
+    assert arguments_of("echo '*' \"*.txt\" \\*") == ["echo", "*", "*.txt", "*"]
+
+
+def test_expand_word_to_arguments_skips_hidden_files_unless_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that * ignores dotfiles and .* finds them"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".hidden").write_text("")
+    (tmp_path / "shown").write_text("")
+
+    assert arguments_of("echo *") == ["echo", "shown"]
+    assert arguments_of("echo .*") == ["echo", ".hidden"]
+
+
+def test_expand_word_to_arguments_matches_through_a_variable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check that a wildcard inside an unquoted variable value is matched"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "one.log").write_text("")
+
+    assert arguments_of("echo $PATTERN", {"PATTERN": "*.log"}) == ["echo", "one.log"]
+
+
+def test_expand_word_to_arguments_matches_question_mark_and_brackets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that ? and [...] work as in bash"""
+    monkeypatch.chdir(tmp_path)
+    for name in ("f1", "f2", "f10"):
+        (tmp_path / name).write_text("")
+
+    assert arguments_of("echo f? f[2-9]") == ["echo", "f1", "f2", "f2"]

@@ -502,3 +502,24 @@ def test_run_line_shares_one_file_when_both_streams_name_it(session: ShellSessio
     assert "no nothing" in text
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+def test_run_line_removes_every_match_of_a_wildcard(session: ShellSession, shell_home: Path) -> None:
+    """Check that rm * deletes the files in the directory"""
+    for name in ("a.txt", "b.txt"):
+        (shell_home / name).write_text("")
+
+    result = session.run_line("rm *")
+
+    assert result.exit_code == 0
+    assert not list(shell_home.glob("*.txt"))
+
+
+def test_run_line_does_not_expand_wildcards_in_a_redirect_target(session: ShellSession, shell_home: Path) -> None:
+    """Check that > keeps a literal name even when it looks like a pattern"""
+    (shell_home / "x.txt").write_text("")
+
+    session.run_line("echo hi > [x].txt")
+
+    assert (shell_home / "[x].txt").exists()
+    assert (shell_home / "x.txt").read_text() == ""

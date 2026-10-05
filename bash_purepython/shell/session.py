@@ -48,7 +48,7 @@ from bash_purepython.shell.streams import (
     make_stdin,
     wrap_binary,
 )
-from bash_purepython.shell.tokenizer import expand_word, tokenize
+from bash_purepython.shell.tokenizer import expand_word, expand_word_to_arguments, tokenize
 
 SHELL_NAME = "ash7"
 SHELL_STATE_VARIABLES = frozenset({"PWD", "OLDPWD"})
@@ -177,6 +177,8 @@ class ShellSession:
             raw_pipeline: The pipeline as parsed
             exit_code: The value $? expands to
 
+        Wildcards in arguments match files; redirect targets are taken literally
+
         Raises:
             ShellSyntaxError: If a redirect target expands to nothing
 
@@ -186,9 +188,9 @@ class ShellSession:
         commands: list[SimpleCommand] = []
         for raw_command in raw_pipeline.commands:
             argv = [
-                expanded
-                for expanded in (expand_word(word, os.environ, self.home, exit_code) for word in raw_command.words)
-                if expanded is not None
+                argument
+                for word in raw_command.words
+                for argument in expand_word_to_arguments(word, os.environ, self.home, exit_code)
             ]
             redirects = raw_command.redirects
             stdout_target = self._expand_target(redirects.stdout_target, exit_code)
