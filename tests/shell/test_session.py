@@ -576,3 +576,16 @@ def test_run_line_refuses_a_here_document_on_a_host_command(shell_home: Path) ->
 
     assert result.exit_code == 2
     assert "browser commands" in result.stderr
+
+
+def test_run_line_keeps_a_here_document_when_a_redirect_follows_it(session: ShellSession, shell_home: Path) -> None:
+    """Check that << survives a > given after it on the same command"""
+    result = session.run_line("cat << 'EOF' > quoted.txt\nhi $WHO\nEOF")
+
+    assert result.exit_code == 0
+    assert (shell_home / "quoted.txt").read_text() == "hi $WHO\n"
+
+
+def test_needs_more_sees_a_here_document_followed_by_a_redirect(session: ShellSession) -> None:
+    """Check that a line ending in << EOF > file still waits for the body"""
+    assert session.needs_more("cat << 'EOF' > quoted.txt")

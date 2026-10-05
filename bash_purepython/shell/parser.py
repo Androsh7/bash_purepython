@@ -50,58 +50,28 @@ def apply_redirect(redirects: RawRedirects, kind: TokenKind, target: RawWord | N
         The updated redirects
     """
     if kind == TokenKind.REDIRECT_WRITE:
-        return RawRedirects(
-            stdout_target=target,
-            stdout_append=False,
-            stderr_target=redirects.stderr_target,
-            stderr_append=redirects.stderr_append,
-            stderr_to_stdout=redirects.stderr_to_stdout,
-            stdin_source=redirects.stdin_source,
-        )
+        return dataclasses.replace(redirects, stdout_target=target, stdout_append=False)
     if kind == TokenKind.REDIRECT_APPEND:
-        return RawRedirects(
-            stdout_target=target,
-            stdout_append=True,
-            stderr_target=redirects.stderr_target,
-            stderr_append=redirects.stderr_append,
-            stderr_to_stdout=redirects.stderr_to_stdout,
-            stdin_source=redirects.stdin_source,
-        )
+        return dataclasses.replace(redirects, stdout_target=target, stdout_append=True)
     if kind == TokenKind.REDIRECT_STDERR_WRITE:
-        return RawRedirects(
-            stdout_target=redirects.stdout_target,
-            stdout_append=redirects.stdout_append,
-            stderr_target=target,
-            stderr_append=False,
-            stderr_to_stdout=False,
-            stdin_source=redirects.stdin_source,
-        )
+        return dataclasses.replace(redirects, stderr_target=target, stderr_append=False, stderr_to_stdout=False)
     if kind == TokenKind.REDIRECT_STDERR_APPEND:
-        return RawRedirects(
-            stdout_target=redirects.stdout_target,
-            stdout_append=redirects.stdout_append,
-            stderr_target=target,
-            stderr_append=True,
-            stderr_to_stdout=False,
-            stdin_source=redirects.stdin_source,
-        )
+        return dataclasses.replace(redirects, stderr_target=target, stderr_append=True, stderr_to_stdout=False)
     if kind == TokenKind.REDIRECT_STDERR_TO_STDOUT:
-        return RawRedirects(
-            stdout_target=redirects.stdout_target,
-            stdout_append=redirects.stdout_append,
+        return dataclasses.replace(
+            redirects,
             stderr_target=redirects.stdout_target,
             stderr_append=redirects.stdout_append,
             stderr_to_stdout=redirects.stdout_target is None,
-            stdin_source=redirects.stdin_source,
         )
     if kind == TokenKind.REDIRECT_BOTH:
-        return RawRedirects(
+        return dataclasses.replace(
+            redirects,
             stdout_target=target,
             stdout_append=False,
             stderr_target=target,
             stderr_append=False,
             stderr_to_stdout=False,
-            stdin_source=redirects.stdin_source,
         )
     if kind in (TokenKind.HEREDOC, TokenKind.HEREDOC_STRIP_TABS):
         return dataclasses.replace(
