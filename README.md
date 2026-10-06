@@ -4,30 +4,38 @@ PurePython implementations of common bash commands, for use with pyodide.
 
 These are mostly vibe coded, use at your own risk.
 
-## Embedding the shell
+## Running scripts
 
-`bash_purepython.shell` runs these commands behind a bash-like line syntax
-without a subprocess, which is what the browser terminal on androsh7.com uses
-under Pyodide.
+`bash_purepython.execute_command` runs bash-like scripts in-process, with no
+subprocesses or threads, which is what pyodide needs. A script is split into
+top-level blocks, each block is turned into a plan, the plan is executed, and
+any script text found along the way (loop bodies, function bodies, `$( )`
+substitutions, subshells) re-enters the same loop.
 
 ```python
-from bash_purepython.shell.models import HostCommand
-from bash_purepython.shell.session import ShellSession
+from bash_purepython.execute_command import run_script
+from bash_purepython.shell_state import ShellState
 
-session = ShellSession(home="/home/user", host_commands=[HostCommand("vim", "open a file")], environment={})
-result = session.run_line("echo hello | tr a-z A-Z > out.txt && cat out.txt")
-print(result.stdout, result.exit_code, result.cwd)
-completion = session.complete("gre", cursor=3)
-print(completion.replacement)
+state = ShellState.for_terminal()
+exit_code = run_script("yes | head -n 3; echo $(echo sub) | cat", state)
+print(state.stdout, state.stderr, exit_code)
 ```
 
-Pass `output_sink=` a callable taking `(kind, text)` to receive stdout and stderr
-as they are written instead of in the result. Pipelines run one stage at a
-time, so only the last stage streams; everything before it is buffered up to
-`OUTPUT_LIMIT_BYTES`.
+Pipelines stream lazily: a command declares the kinds of input and output it
+supports (`Iterator[str]`, `str`, `Iterator[bytes]`, `bytes`) and the engine
+negotiates a shared kind between neighbouring stages, so `yes | head` runs
+`yes` only as far as `head` reads. Standard output and standard error are
+written to the state's sinks as each chunk is produced and are also recorded
+on the state.
 
-Commands the embedding host runs itself (an editor, a network fetch, a file
-upload) are declared as `HostCommand`s. The session reports them back as a
-`host_call` instead of running them, and refuses them inside a pipeline.
-`bash_purepython.shell.bridge` wraps the same calls in JSON strings for hosts
-that cannot pass Python objects.
+Pass `write_output=` and `write_error=` callables to `ShellState` to receive
+the streams somewhere other than the process streams. Register extra commands
+by subclassing `bash_purepython.command.command.Command` and adding an
+instance to a `CommandRegistry` passed to `run_script`.
+
+Supported so far: pipelines (`|`, `|&`, `!`), `&&`/`||` lists, `if`/`elif`/`else`,
+`for`, `while`, `until`, functions, subshells, brace groups, redirections
+(`>`, `>>`, `<`, `2>`, `2>>`, `2>&1`, `&>`, heredocs, here-strings), parameter
+and command substitution, and the builtins `cd`, `export`, `unset`, `exit`,
+`return`, `break`, `continue`. Background `&` runs the command synchronously.
+Not yet: `case`, `select`, globbing, arithmetic, process substitution.
