@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.3.1 - 2026-10-06
+## 0.3.1
 
 ### Fixed
 
@@ -17,10 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now goes to the line's collected stderr with exit code 1
 - A wildcard inside double quotes followed by an escape (`"*\$x"`) could still expand against
   the directory; text before the escape now stays quoted
-- The tag workflow passed the changelog notes straight into a shell script, so backticks in
-  the notes broke the release tag; the notes now go through an environment variable
 
-## 0.3.0 - 2026-10-03
+## 0.3.0
 
 ### Added
 
@@ -117,3 +115,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - PurePython implementations of basic bash commands
+- 
