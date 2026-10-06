@@ -39,5 +39,5 @@ class YesCommand(Command):
         Returns:
             A lazy stream that only ends when closed
         """
-        line = (" ".join(invocation.arguments) or DEFAULT_TEXT) + "\n"
+        line = (" ".join(invocation.arguments) if invocation.arguments else DEFAULT_TEXT) + "\n"
         return CommandResult(stdout=repeat_forever(line), exit_code=EXIT_CODE_SUCCESS)

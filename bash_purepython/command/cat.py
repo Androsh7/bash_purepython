@@ -7,7 +7,7 @@ from collections.abc import Generator, Iterator
 from bash_purepython.command.arguments import CommandArgumentParser, parse_command_arguments
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
 from bash_purepython.command.lines import stdin_lines
-from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, ShellState
+from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, NULL_DEVICE_PATH, ShellState
 
 STDIN_PATH = "-"
 LINE_NUMBER_WIDTH = 6
@@ -23,6 +23,8 @@ def file_lines(path_text: str, state: ShellState) -> Iterator[str] | None:
     Returns:
         An iterator over the lines, or None
     """
+    if path_text == NULL_DEVICE_PATH:
+        return iter(())
     path = state.resolve_path(path_text)
     if path.is_dir():
         state.write_error(f"cat: {path_text}: Is a directory\n")

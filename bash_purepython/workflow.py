@@ -88,6 +88,7 @@ class IfNode:
 
     branches: list[tuple[str, str]]
     else_body: str | None = None
+    redirections: list[Redirection] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class ForNode:
     variable: str
     words_text: str | None
     body: str
+    redirections: list[Redirection] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,7 @@ class WhileNode:
 
     condition: str
     body: str
+    redirections: list[Redirection] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,7 @@ class UntilNode:
 
     condition: str
     body: str
+    redirections: list[Redirection] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

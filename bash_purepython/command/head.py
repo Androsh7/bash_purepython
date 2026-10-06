@@ -8,7 +8,7 @@ from collections.abc import Generator, Iterator
 from bash_purepython.command.arguments import CommandArgumentParser, parse_command_arguments
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
 from bash_purepython.command.lines import close_stdin, stdin_lines
-from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, ShellState
+from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, NULL_DEVICE_PATH, ShellState
 
 DEFAULT_LINE_COUNT = 10
 STDIN_PATH = "-"
@@ -100,6 +100,8 @@ def read_file_lines(path_text: str, state: ShellState) -> Iterator[str] | None:
     Returns:
         An iterator over the lines, or None
     """
+    if path_text == NULL_DEVICE_PATH:
+        return iter(())
     path = state.resolve_path(path_text)
     if path.is_dir():
         state.write_error(f"head: error reading '{path_text}': Is a directory\n")
@@ -128,15 +130,17 @@ def head_sources(
         Zero when every source was read, otherwise one
     """
     exit_code = EXIT_CODE_SUCCESS
+    printed_any_source = False
     try:
-        for index, path_text in enumerate(paths):
+        for path_text in paths:
             lines = source_lines(path_text, invocation)
             if lines is None:
                 exit_code = EXIT_CODE_FAILURE
                 continue
             if show_headers:
                 label = STDIN_LABEL if path_text == STDIN_PATH else path_text
-                yield ("\n" if index else "") + f"==> {label} <==\n"
+                yield ("\n" if printed_any_source else "") + f"==> {label} <==\n"
+            printed_any_source = True
             if character_limit is None:
                 yield from take_lines(lines, line_limit)
             else:

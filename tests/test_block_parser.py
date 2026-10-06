@@ -206,8 +206,8 @@ def test_build_plan_makes_function_definitions(script: str, expected: FunctionDe
 
 @pytest.mark.parametrize(
     "script",
-    ["case $x in a) echo;; esac", "select x in a b; do echo $x; done", "while true; do break; done < file"],
-    ids=["case", "select", "loop_redirection"],
+    ["case $x in a) echo;; esac", "select x in a b; do echo $x; done"],
+    ids=["case", "select"],
 )
 def test_build_plan_rejects_unsupported_blocks(script: str) -> None:
     """Check that constructs outside this slice raise rather than misbehave"""

@@ -34,8 +34,25 @@ by subclassing `bash_purepython.command.command.Command` and adding an
 instance to a `CommandRegistry` passed to `run_script`.
 
 Supported so far: pipelines (`|`, `|&`, `!`), `&&`/`||` lists, `if`/`elif`/`else`,
-`for`, `while`, `until`, functions, subshells, brace groups, redirections
-(`>`, `>>`, `<`, `2>`, `2>>`, `2>&1`, `&>`, heredocs, here-strings), parameter
-and command substitution, and the builtins `cd`, `export`, `unset`, `exit`,
-`return`, `break`, `continue`. Background `&` runs the command synchronously.
-Not yet: `case`, `select`, globbing, arithmetic, process substitution.
+`for`, `while`, `until`, functions, subshells, brace groups, redirections on
+commands and on compound commands (`>`, `>>`, `<`, `2>`, `2>>`, `2>&1`, `&>`,
+heredocs, here-strings, `/dev/null`), parameter and command substitution, and
+the builtins `cd`, `export`, `unset`, `exit`, `return`, `break`, `continue`.
+Commands shipped: `cat`, `echo`, `false`, `head`, `printf`, `true`, `yes`.
+
+Known limitations: background `&` runs the command synchronously; a group,
+loop or function inside a pipeline is captured in full before the next stage
+reads it, so an endless producer inside one is cut off at the executor's
+output limit instead of streaming; `case`, `select`, globbing, arithmetic and
+process substitution are not implemented.
+
+## Testing
+
+`uv run pytest` runs the in-memory suite. `tests/test_live_bash.py` runs the
+same several hundred scripts through a real `bash` binary and the engine and
+compares standard output and exit codes; it is marked `live_bash_test` and
+excluded by default. Run it with:
+
+```bash
+uv run pytest -m live_bash_test
+```

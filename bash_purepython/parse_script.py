@@ -301,7 +301,8 @@ class ScriptSplitter:
             elif Nesting.CASE in self.nesting:
                 self.at_command_start = True
         elif character == "{":
-            if self.at_word_start and self._followed_by_whitespace_or_end():
+            opens_group = self.at_word_start or self._previous_character() == ")"
+            if opens_group and self._followed_by_whitespace_or_end():
                 if top is None and self.top_level_word_count == 0 and self.opening_bracket is None:
                     self.opening_bracket = "{"
                 self.nesting.append(Nesting.BRACE_GROUP)

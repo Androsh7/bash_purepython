@@ -63,7 +63,10 @@ ban-relative-imports = "all"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not live_bash_test'"
+markers = [
+    "live_bash_test: needs a real bash binary on PATH to compare against",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 # Project libraries
-from bash_purepython.shell_state import ShellState, ShellSyntaxError
+from bash_purepython.shell_state import ExpansionError, ShellState, ShellSyntaxError
 from bash_purepython.workflow import Redirection, RedirectionKind
 
 WHITESPACE_CHARACTERS = frozenset(" \t\n")
@@ -21,6 +21,8 @@ DOUBLE_QUOTE_ESCAPABLE_CHARACTERS = frozenset('$`"\\\n')
 ECHO_ESCAPE_SEQUENCES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "\\": "\\"}
 HOME_VARIABLE_NAME = "HOME"
 SHELL_NAME = "bash"
+POSITIONAL_FIELD_SEPARATOR = "\x1f"
+ALL_POSITIONAL_SPELLINGS = frozenset({"$@", "${@}"})
 
 RunSubstitution = Callable[[str], str]
 
@@ -138,6 +140,8 @@ class SimpleCommandTokenizer:
             self._add_part(self.text[start : self.position], QuoteStyle.NONE)
         elif character in "()":
             raise ShellSyntaxError(f"unexpected {character} in command: {self.text}")
+        elif character == ";":
+            raise ShellSyntaxError("syntax error near unexpected token `;;'")
         else:
             self.position += 1
             self._add_part(character, QuoteStyle.NONE)
@@ -390,6 +394,12 @@ class SimpleCommandTokenizer:
                 self._skip_double_quoted()
             elif character == "\\":
                 self.position += 2
+            elif self.text.startswith(("$(", "${"), self.position):
+                opening = self.text[self.position + 1]
+                self.position += 2
+                self._skip_balanced(opening, ")" if opening == "(" else "}")
+            elif character == "`":
+                self._skip_backticks()
             else:
                 self.position += 1
         if start == self.position:
@@ -471,13 +481,45 @@ def lookup_parameter(name: str, state: ShellState) -> str:
     return state.variables.get(name, "")
 
 
-def expand_braced_parameter(expression: str, state: ShellState, run_substitution: RunSubstitution) -> str:
+def expand_operand(operand: str, state: ShellState, run_substitution: RunSubstitution, in_double_quotes: bool) -> str:
+    """Return the word after a ``${name:-...}`` style operator, expanded as bash expands it
+
+    Outside double quotes the operand is a word of its own, so its quotes are removed; inside them it is plain text
+
+    Args:
+        operand: The raw operand text
+        state: The shell state to read variables from
+        run_substitution: Runs a script and returns its output
+        in_double_quotes: Whether the whole expansion sits inside double quotes
+
+    Returns:
+        The expanded operand
+    """
+    if not in_double_quotes:
+        try:
+            words, redirections, assignments = tokenize_simple_command(operand)
+        except ShellSyntaxError:
+            words, redirections, assignments = [], [], []
+        if len(words) == 1 and not redirections and not assignments:
+            return expand_word_unsplit(words[0], state, run_substitution)
+    return expand_text(operand, state, run_substitution, in_double_quotes=True)
+
+
+def expand_braced_parameter(
+    expression: str,
+    state: ShellState,
+    run_substitution: RunSubstitution,
+    in_double_quotes: bool = True,
+    split_positional: bool = False,
+) -> str:
     """Return the value of a ``${...}`` expression
 
     Args:
         expression: The text between the braces
         state: The shell state to read variables from
         run_substitution: Runs a script and returns its output, for defaults holding substitutions
+        in_double_quotes: Whether the expansion sits inside double quotes, which keeps operand quotes literal
+        split_positional: Whether ``${@}`` should separate the positional arguments with the field separator
 
     Raises:
         ShellSyntaxError: If the expression uses an operator this shell does not support
@@ -489,28 +531,30 @@ def expand_braced_parameter(expression: str, state: ShellState, run_substitution
         return str(len(lookup_parameter(expression[1:], state)))
     match = re.match(r"^([A-Za-z_]\w*|[?#@*$0-9])(:?[-=+?])?(.*)$", expression, re.DOTALL)
     if match is None:
-        raise ShellSyntaxError(f"bad substitution: ${{{expression}}}")
+        raise ExpansionError(f"${{{expression}}}: bad substitution")
     name, operator, operand = match.group(1), match.group(2), match.group(3)
     value = lookup_parameter(name, state)
+    if name == "@" and split_positional:
+        value = POSITIONAL_FIELD_SEPARATOR.join(state.positional_arguments)
     if operator is None:
         if operand:
-            raise ShellSyntaxError(f"bad substitution: ${{{expression}}}")
+            raise ExpansionError(f"${{{expression}}}: bad substitution")
         return value
     is_set = name in state.variables or (name.isdigit() and value != "") or name in "?#@*$0"
     treat_empty_as_unset = operator.startswith(":")
     missing = not is_set or (treat_empty_as_unset and value == "")
     if operator.endswith("-"):
-        return expand_text(operand, state, run_substitution, in_double_quotes=True) if missing else value
+        return expand_operand(operand, state, run_substitution, in_double_quotes) if missing else value
     if operator.endswith("+"):
-        return "" if missing else expand_text(operand, state, run_substitution, in_double_quotes=True)
+        return "" if missing else expand_operand(operand, state, run_substitution, in_double_quotes)
     if operator.endswith("="):
         if missing:
-            value = expand_text(operand, state, run_substitution, in_double_quotes=True)
+            value = expand_operand(operand, state, run_substitution, in_double_quotes)
             state.variables[name] = value
         return value
     if missing:
-        message = expand_text(operand, state, run_substitution, in_double_quotes=True) or "parameter null or not set"
-        raise ShellSyntaxError(f"{name}: {message}")
+        message = expand_operand(operand, state, run_substitution, in_double_quotes) or "parameter null or not set"
+        raise ExpansionError(f"{name}: {message}")
     return value
 
 
@@ -546,7 +590,13 @@ def find_balanced_end(text: str, start: int, opening: str, closing: str) -> int:
     raise ShellSyntaxError(f"unbalanced {opening}: {text}")
 
 
-def expand_text(text: str, state: ShellState, run_substitution: RunSubstitution, in_double_quotes: bool) -> str:
+def expand_text(
+    text: str,
+    state: ShellState,
+    run_substitution: RunSubstitution,
+    in_double_quotes: bool,
+    split_positional: bool = False,
+) -> str:
     """Return text with every parameter and command substitution replaced
 
     Args:
@@ -554,6 +604,7 @@ def expand_text(text: str, state: ShellState, run_substitution: RunSubstitution,
         state: The shell state to read variables from
         run_substitution: Runs a script and returns its output with trailing newlines removed
         in_double_quotes: Whether backslashes follow the double-quote escaping rules
+        split_positional: Whether ``$@`` separates the positional arguments with the field separator
 
     Returns:
         The expanded text, not yet word-split
@@ -578,13 +629,17 @@ def expand_text(text: str, state: ShellState, run_substitution: RunSubstitution,
             index = end
         elif text.startswith("${", index):
             end = find_balanced_end(text, index + 1, "{", "}")
-            pieces.append(expand_braced_parameter(text[index + 2 : end - 1], state, run_substitution))
+            braced = text[index + 2 : end - 1]
+            pieces.append(expand_braced_parameter(braced, state, run_substitution, in_double_quotes, split_positional))
             index = end
         elif character == "$":
             match = VARIABLE_NAME_PATTERN.match(text, index + 1)
             if match is not None:
                 pieces.append(lookup_parameter(match.group(0), state))
                 index = match.end()
+            elif index + 1 < len(text) and text[index + 1] == "@" and split_positional:
+                pieces.append(POSITIONAL_FIELD_SEPARATOR.join(state.positional_arguments))
+                index += 2
             elif index + 1 < len(text) and text[index + 1] in SPECIAL_PARAMETER_CHARACTERS:
                 pieces.append(lookup_parameter(text[index + 1], state))
                 index += 2
@@ -632,7 +687,14 @@ def expand_word(word: Word, state: ShellState, run_substitution: RunSubstitution
             current = (current or "") + part.text
             continue
         if part.quote == QuoteStyle.DOUBLE:
-            current = (current or "") + expand_text(part.text, state, run_substitution, in_double_quotes=True)
+            expanded = expand_text(part.text, state, run_substitution, in_double_quotes=True, split_positional=True)
+            if expanded == "" and part.text in ALL_POSITIONAL_SPELLINGS:
+                continue
+            positional_fields = expanded.split(POSITIONAL_FIELD_SEPARATOR)
+            current = (current or "") + positional_fields[0]
+            for positional_field in positional_fields[1:]:
+                fields.append(current)
+                current = positional_field
             continue
         text = expand_tilde(part.text, state) if part_index == 0 else part.text
         expanded = expand_text(text, state, run_substitution, in_double_quotes=False)

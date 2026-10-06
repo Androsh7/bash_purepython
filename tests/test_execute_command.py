@@ -495,3 +495,120 @@ def test_recorded_output_excludes_captured_substitutions(tmp_path: Path) -> None
     Executor().execute_script("echo $(echo inner); echo hidden > out.txt", state)
 
     assert state.stdout == "inner\n"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_stdout", "expected_exit_code"),
+    [
+        ("x=$(false); echo $?", "1\n", 0),
+        ("x=$(nosuch 2>/dev/null); echo $?", "127\n", 0),
+        ("x=5; echo $?", "0\n", 0),
+        ("(exit 3); echo $?", "3\n", 0),
+        ("x=$(exit 4); echo $?", "4\n", 0),
+        ("f() { exit 3; }; (f); echo $?", "3\n", 0),
+        ("break; echo after", "after\n", 0),
+        ("continue; echo after", "after\n", 0),
+        ("return; echo after", "after\n", 0),
+        ("f() { break; echo in; }; for i in 1 2; do f; echo $i; done", "in\n1\nin\n2\n", 0),
+        ("for i in 1 2; do echo $i; done > out; cat out", "1\n2\n", 0),
+        ("if true; then echo a; fi > out; cat out", "a\n", 0),
+        ("while true; do echo w; break; done >> out; cat out", "w\n", 0),
+        ("if true; then cat; fi <<EOF\nfed\nEOF", "fed\n", 0),
+        ("cat missing 2>&1 | head -c 3", "cat", 0),
+        ("cat missing |& head -c 3", "cat", 0),
+        ("cat missing &> both; head -c 3 both", "cat", 0),
+        ("{ echo a; cat missing; } 2>&1 | head -n 1", "a\n", 0),
+        ("cat missing 2>/dev/null; echo $?", "1\n", 0),
+        ("cat missing >/dev/null 2>&1; echo $?", "1\n", 0),
+        ("echo a > /dev/null; echo $?", "0\n", 0),
+        ("cat /dev/null; echo $?", "0\n", 0),
+        ("f() { cat; }; f < /dev/null; echo end", "end\n", 0),
+        ("cat <<< $(echo sub)", "sub\n", 0),
+        ("yes '' | head -n 2 | cat -n", "     1\t\n     2\t\n", 0),
+        ("x=1; (x=2; (x=3; echo $x); echo $x); echo $x", "3\n2\n1\n", 0),
+        ("f() { return 300; }; f; echo $?", "44\n", 0),
+        ("echo a | false; echo $?", "1\n", 0),
+        ("false; x=$?; echo $x", "1\n", 0),
+    ],
+    ids=[
+        "assignment_takes_substitution_exit_code",
+        "assignment_takes_command_not_found_code",
+        "plain_assignment_succeeds",
+        "exit_in_subshell_only_leaves_subshell",
+        "exit_in_substitution_only_leaves_substitution",
+        "exit_in_function_in_subshell",
+        "break_outside_loop_is_ignored",
+        "continue_outside_loop_is_ignored",
+        "return_outside_function_is_ignored",
+        "break_in_function_does_not_leave_caller_loop",
+        "for_loop_redirection",
+        "if_redirection",
+        "while_append_redirection",
+        "heredoc_into_if",
+        "stderr_to_stdout_enters_the_pipe",
+        "pipe_ampersand_enters_the_pipe",
+        "both_redirection_to_file",
+        "group_stderr_to_stdout_enters_the_pipe",
+        "stderr_to_null_device",
+        "stdout_and_stderr_to_null_device",
+        "stdout_to_null_device",
+        "read_null_device",
+        "function_stdin_from_null_device",
+        "here_string_with_substitution",
+        "yes_with_empty_argument",
+        "nested_subshell_scopes",
+        "return_code_wraps_at_256",
+        "pipeline_exit_code_from_failing_consumer",
+        "exit_code_captured_into_variable",
+    ],
+)
+def test_run_scripts_matching_bash_behaviour(
+    shell: ShellHarness, script: str, expected_stdout: str, expected_exit_code: int
+) -> None:
+    """Check scripts whose expected output was confirmed against real bash"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected_stdout, expected_exit_code)
+
+
+def test_stray_double_semicolon_is_a_syntax_error(shell: ShellHarness) -> None:
+    """Check that ;; outside a case statement stops the script with a usage error"""
+    run = shell.run("echo a;;echo b")
+
+    assert (run.stdout, run.exit_code) == ("", EXIT_CODE_USAGE_ERROR)
+
+
+def test_bad_substitution_stops_the_script(shell: ShellHarness) -> None:
+    """Check that an unparseable parameter expansion stops the script with exit code one"""
+    run = shell.run("echo ${}; echo after")
+
+    assert (run.stdout, run.exit_code) == ("", 1)
+    assert run.stderr != ""
+
+
+def test_nested_group_does_not_hide_piped_input(shell: ShellHarness) -> None:
+    """Check that a command inside a group inside a group still reads what was piped into the outer group"""
+    run = shell.run("echo in | { if true; then cat; fi; }")
+
+    assert run.stdout == "in\n"
+
+
+def test_piped_input_is_read_once_by_the_first_reader(shell: ShellHarness) -> None:
+    """Check that commands which take no input leave the piped input for the first command that reads it"""
+    run = shell.run("echo in | { true; echo skip; cat; cat; }")
+
+    assert run.stdout == "skip\nin\n"
+
+
+def test_endless_producer_inside_a_group_hits_the_output_limit(tmp_path: Path) -> None:
+    """Check that a group that never stops writing is cut off with an error instead of hanging"""
+    pieces: list[str] = []
+    errors: list[str] = []
+    state = ShellState(cwd=tmp_path, write_output=pieces.append, write_error=errors.append)
+    executor = Executor(output_limit_characters=1000)
+
+    exit_code = executor.execute_script("( yes ) | head -n 2; echo after", state)
+
+    assert "".join(pieces) == "y\ny\nafter\n"
+    assert exit_code == 0
+    assert errors != []

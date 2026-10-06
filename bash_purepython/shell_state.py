@@ -12,6 +12,8 @@ EXIT_CODE_FAILURE = 1
 EXIT_CODE_USAGE_ERROR = 2
 EXIT_CODE_COMMAND_NOT_FOUND = 127
 EXIT_CODE_BROKEN_PIPE = 141
+EXIT_CODE_MODULUS = 256
+NULL_DEVICE_PATH = "/dev/null"
 
 
 class ShellError(Exception):
@@ -20,6 +22,10 @@ class ShellError(Exception):
 
 class ShellSyntaxError(ShellError):
     """Signal command text the shell cannot parse"""
+
+
+class ExpansionError(ShellError):
+    """Signal a word expansion the shell cannot perform, which stops the script"""
 
 
 class UnsupportedBlockError(ShellError):
@@ -46,6 +52,21 @@ class CommandNotFoundError(ShellError):
         """
         super().__init__(f"{name}: command not found")
         self.name = name
+
+
+class OutputLimitExceededError(Exception):
+    """Signal that a captured command wrote more than the executor allows"""
+
+    def __init__(self, collector: object, limit_characters: int):
+        """Record which collector overflowed
+
+        Args:
+            collector: The object that was collecting the output
+            limit_characters: The limit that was exceeded
+        """
+        super().__init__(f"output exceeded {limit_characters} characters")
+        self.collector = collector
+        self.limit_characters = limit_characters
 
 
 class ControlFlowSignal(Exception):  # noqa: N818
@@ -116,6 +137,8 @@ class ShellState:
     positional_arguments: list[str] = field(default_factory=list)
     last_exit_code: int = EXIT_CODE_SUCCESS
     pending_stdin: Any = None
+    loop_depth: int = 0
+    function_depth: int = 0
 
     def __post_init__(self):
         """Wrap both sinks so every chunk is recorded as well as streamed to the terminal as it is written"""
@@ -164,6 +187,8 @@ class ShellState:
             functions=dict(self.functions),
             positional_arguments=list(self.positional_arguments),
             last_exit_code=self.last_exit_code,
+            loop_depth=self.loop_depth,
+            function_depth=self.function_depth,
         )
 
     def resolve_path(self, path_text: str) -> Path:

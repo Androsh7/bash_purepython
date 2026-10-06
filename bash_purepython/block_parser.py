@@ -35,7 +35,7 @@ PIPE_WITH_STDERR_OPERATOR = "|&"
 LIST_OPERATORS_LONGEST_FIRST = ("&&", "||", "|&", "|")
 NEGATION_PATTERN = re.compile(r"^!(?:\s+|$)")
 SECTION_KEYWORD_PATTERN = re.compile(r"^(then|elif|else|fi|do|done)(?:\s+|$)", re.DOTALL)
-FOR_HEADER_PATTERN = re.compile(r"^([A-Za-z_]\w*)(\s+in(?:\s+(.*))?)?$", re.DOTALL)
+FOR_HEADER_PATTERN = re.compile(r"^for\s+([A-Za-z_]\w*)(\s+in\b([^;\n]*))?\s*[;\n]?\s*(?=do\b)", re.DOTALL)
 FUNCTION_PATTERN = re.compile(r"^(?:function\s+)?([A-Za-z_][\w-]*)\s*(?:\(\s*\))?\s*([({].*[)}])$", re.DOTALL)
 SIMPLE_COMMAND_BLOCK_TYPES = frozenset(
     {
@@ -308,6 +308,7 @@ def parse_if(text: str) -> IfNode:
     branches: list[tuple[str, str]] = []
     else_body: str | None = None
     pending_condition: str | None = None
+    redirections: list[Redirection] = []
     for keyword, section_text in sections:
         if keyword in ("if", "elif"):
             pending_condition = section_text
@@ -319,17 +320,16 @@ def parse_if(text: str) -> IfNode:
         elif keyword == "else":
             else_body = section_text
         elif keyword == "fi":
-            if section_text.strip():
-                raise UnsupportedBlockError(text)
+            redirections = parse_trailing_redirections(section_text)
         else:
             raise ShellSyntaxError(f"unexpected {keyword} in if: {text}")
     if not branches:
         raise ShellSyntaxError(f"if without then: {text}")
-    return IfNode(branches=branches, else_body=else_body)
+    return IfNode(branches=branches, else_body=else_body, redirections=redirections)
 
 
-def parse_loop_sections(text: str, opening_keyword: str) -> tuple[str, str]:
-    """Return the header and body of a for, while, or until loop
+def parse_loop_sections(text: str, opening_keyword: str) -> tuple[str, str, list[Redirection]]:
+    """Return the header, body and trailing redirections of a for, while, or until loop
 
     Args:
         text: The whole loop block
@@ -339,14 +339,12 @@ def parse_loop_sections(text: str, opening_keyword: str) -> tuple[str, str]:
         ShellSyntaxError: If do or done is missing
 
     Returns:
-        The header text and the body text
+        The header text, the body text, and the redirections written after done
     """
     sections = dict(split_into_sections(text, opening_keyword))
     if "do" not in sections or "done" not in sections:
         raise ShellSyntaxError(f"loop without do and done: {text}")
-    if sections["done"].strip():
-        raise UnsupportedBlockError(text)
-    return sections[opening_keyword], sections["do"]
+    return sections[opening_keyword], sections["do"], parse_trailing_redirections(sections["done"])
 
 
 def parse_for(text: str) -> ForNode:
@@ -361,12 +359,15 @@ def parse_for(text: str) -> ForNode:
     Returns:
         A for node
     """
-    header, body = parse_loop_sections(text, "for")
-    match = FOR_HEADER_PATTERN.match(header.strip())
+    match = FOR_HEADER_PATTERN.match(text)
     if match is None:
-        raise ShellSyntaxError(f"bad for header: {header}")
-    words_text = None if match.group(2) is None else (match.group(3) or "")
-    return ForNode(variable=match.group(1), words_text=words_text, body=body)
+        raise ShellSyntaxError(f"bad for header: {text}")
+    words_text = None if match.group(2) is None else (match.group(3) or "").strip()
+    sections = dict(split_into_sections(text[match.end() :].lstrip(), "do"))
+    if "done" not in sections:
+        raise ShellSyntaxError(f"loop without done: {text}")
+    redirections = parse_trailing_redirections(sections["done"])
+    return ForNode(variable=match.group(1), words_text=words_text, body=sections["do"], redirections=redirections)
 
 
 def parse_function(text: str) -> FunctionDefinitionNode:
@@ -418,11 +419,11 @@ def build_plan(block: CommandBlock) -> PlanNode:
     if block_type == CommandBlockType.FOR:
         return parse_for(text)
     if block_type == CommandBlockType.WHILE:
-        condition, body = parse_loop_sections(text, "while")
-        return WhileNode(condition=condition, body=body)
+        condition, body, redirections = parse_loop_sections(text, "while")
+        return WhileNode(condition=condition, body=body, redirections=redirections)
     if block_type == CommandBlockType.UNTIL:
-        condition, body = parse_loop_sections(text, "until")
-        return UntilNode(condition=condition, body=body)
+        condition, body, redirections = parse_loop_sections(text, "until")
+        return UntilNode(condition=condition, body=body, redirections=redirections)
     if block_type == CommandBlockType.FUNCTION:
         return parse_function(text)
     raise UnsupportedBlockError(text)
