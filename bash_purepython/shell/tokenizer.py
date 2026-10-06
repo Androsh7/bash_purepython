@@ -208,6 +208,12 @@ def read_word(line: str, index: int) -> tuple[RawWord, int]:
             parts.append(WordPart(text=plain, quoted=False, wildcards=True))
             plain = ""
 
+    def flush_double_quoted() -> None:
+        nonlocal plain
+        if plain:
+            parts.append(WordPart(text=plain, quoted=False))
+            plain = ""
+
     while index < len(line):
         character = line[index]
         if character in WORD_BREAKERS:
@@ -225,7 +231,7 @@ def read_word(line: str, index: int) -> tuple[RawWord, int]:
             index += 1
             while index < len(line) and line[index] != '"':
                 if line[index] == "\\" and index + 1 < len(line) and line[index + 1] in DOUBLE_QUOTE_ESCAPABLE:
-                    flush_plain()
+                    flush_double_quoted()
                     parts.append(WordPart(text=line[index + 1], quoted=True))
                     index += 2
                     continue
@@ -235,9 +241,7 @@ def read_word(line: str, index: int) -> tuple[RawWord, int]:
                 raise IncompleteInputError("unterminated double quote")
             index += 1
             # Text inside double quotes expands but counts as quoted, so "" and "$UNSET" stay arguments
-            if plain:
-                parts.append(WordPart(text=plain, quoted=False))
-                plain = ""
+            flush_double_quoted()
             parts.append(WordPart(text="", quoted=True))
             continue
         if character == "\\" and index + 1 < len(line):

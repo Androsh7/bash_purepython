@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.1 - 2026-10-06
+
+### Fixed
+
+- A redirect target set by an `export` earlier on the same line (`export F=out.txt; echo hi > $F`)
+  was refused as an ambiguous redirect before anything ran; the host-command check now expands
+  only command names, so the line runs and the file is written
+- A stage that hit the pipe limit while its stderr went to a file or shared the pipe (`yes 2> err`,
+  `yes 2>&1 | head -n 1`) raised out of `run_line` instead of reporting the overflow; the notice
+  now goes to the line's collected stderr with exit code 1
+- A wildcard inside double quotes followed by an escape (`"*\$x"`) could still expand against
+  the directory; text before the escape now stays quoted
+- The tag workflow passed the changelog notes straight into a shell script, so backticks in
+  the notes broke the release tag; the notes now go through an environment variable
+
 ## 0.3.0 - 2026-10-03
 
 ### Added

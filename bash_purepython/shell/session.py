@@ -30,6 +30,7 @@ from bash_purepython.shell.models import (
     HostCommandPlacementError,
     IncompleteInputError,
     Pipeline,
+    RawCommand,
     RawPipeline,
     RawWord,
     Redirect,
@@ -307,7 +308,8 @@ class ShellSession:
     def _host_call_for(self, command_list: CommandList) -> HostCall | None:
         """Return the host call a line asks for, or None when the shell runs the line itself
 
-        Command names are expanded against the current environment for the check
+        Command names are expanded against the current environment for the check;
+        a lone host command is resolved in full, everything else only by name
 
         Args:
             command_list: The parsed line
@@ -319,10 +321,11 @@ class ShellSession:
             The host command, its arguments and its redirect when the line is just that command
         """
         host_names = set(self.host_command_names)
-        resolved = [self.resolve_pipeline(pipeline, self.last_exit_code) for pipeline in command_list.pipelines]
-        if len(resolved) == 1 and len(resolved[0].commands) == 1:
-            only_command = resolved[0].commands[0]
-            if only_command.name in host_names:
+        if len(command_list.pipelines) == 1 and len(command_list.pipelines[0].commands) == 1:
+            raw_command = command_list.pipelines[0].commands[0]
+            if self._command_name_of(raw_command) in host_names:
+                resolved = self.resolve_pipeline(command_list.pipelines[0], self.last_exit_code)
+                only_command = resolved.commands[0]
                 if (
                     only_command.stderr_redirect
                     or only_command.stderr_to_stdout
@@ -331,10 +334,26 @@ class ShellSession:
                 ):
                     raise ShellSyntaxError(HOST_REDIRECT_MESSAGE.format(name=only_command.name))
                 return HostCall(name=only_command.name, argv=only_command.argv, redirect=only_command.redirect)
-        for pipeline in resolved:
-            for command in pipeline.commands:
-                if command.name in host_names:
-                    raise HostCommandPlacementError(command.name)
+        for pipeline in command_list.pipelines:
+            for raw_command in pipeline.commands:
+                name = self._command_name_of(raw_command)
+                if name in host_names:
+                    raise HostCommandPlacementError(name)
+        return None
+
+    def _command_name_of(self, raw_command: RawCommand) -> str | None:
+        """Return the expanded name of a command without touching its redirects
+
+        Args:
+            raw_command: The command as parsed
+
+        Returns:
+            The first argument the command's words expand to, or None when they expand to nothing
+        """
+        for word in raw_command.words:
+            arguments = expand_word_to_arguments(word, os.environ, self.home, self.last_exit_code)
+            if arguments:
+                return arguments[0]
         return None
 
     def _run_command_list(self, command_list: CommandList) -> RunResult:
@@ -433,9 +452,6 @@ class ShellSession:
                 streams.stderr.flush()
                 for opened in streams.files:
                     opened.close()
-            if streams.pipe_capture is not None and streams.pipe_capture.overflowed:
-                streams.stderr.write(f"{SHELL_NAME}: {command.name}: output exceeded {OUTPUT_LIMIT_BYTES} bytes\n")
-                exit_code = EXIT_CODE_FAILURE
             if streams.stderr_capture is not None:
                 stderr_parts.append(streams.stderr_capture.getvalue())
                 if streams.stderr_capture.overflowed:
@@ -445,6 +461,10 @@ class ShellSession:
                         )
                     )
                     exit_code = EXIT_CODE_FAILURE
+            if streams.pipe_capture is not None and streams.pipe_capture.overflowed:
+                overflow_message = f"{SHELL_NAME}: {command.name}: output exceeded {OUTPUT_LIMIT_BYTES} bytes\n"
+                stderr_parts.append(overflow_message.encode(STREAM_ENCODING))
+                exit_code = EXIT_CODE_FAILURE
             if streams.pipe_capture is None:
                 continue
             if position == last_position:

@@ -222,3 +222,13 @@ def test_expand_word_to_arguments_matches_question_mark_and_brackets(
         (tmp_path / name).write_text("")
 
     assert arguments_of("echo f? f[2-9]") == ["echo", "f1", "f2", "f2"]
+
+
+def test_expand_word_to_arguments_keeps_a_quoted_wildcard_before_an_escape_literal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that a double-quoted star followed by an escape is not expanded"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a$x").write_text("")
+
+    assert arguments_of('echo "*\\$x"') == ["echo", "*$x"]

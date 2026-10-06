@@ -589,3 +589,36 @@ def test_run_line_keeps_a_here_document_when_a_redirect_follows_it(session: Shel
 def test_needs_more_sees_a_here_document_followed_by_a_redirect(session: ShellSession) -> None:
     """Check that a line ending in << EOF > file still waits for the body"""
     assert session.needs_more("cat << 'EOF' > quoted.txt")
+
+
+def test_run_line_redirects_to_a_variable_exported_earlier_on_the_line(session: ShellSession, shell_home: Path) -> None:
+    """Check that a redirect target can come from an export earlier on the same line"""
+    result = session.run_line("export TARGET=out.txt; echo hi > $TARGET")
+
+    assert result.exit_code == 0
+    assert (shell_home / "out.txt").read_text() == "hi\n"
+
+
+def test_run_line_reports_an_overflow_when_stderr_is_a_file(
+    session: ShellSession, shell_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that a stage whose stderr went to a file still reports hitting the pipe limit"""
+    monkeypatch.setattr(session_module, "OUTPUT_LIMIT_BYTES", 1 << 16)
+
+    result = session.run_line("yes 2> err.txt")
+
+    assert result.exit_code == 1
+    assert "output exceeded" in result.stderr
+    assert (shell_home / "err.txt").read_text() == ""
+
+
+def test_run_line_reports_an_overflow_when_stderr_shares_the_pipe(
+    session: ShellSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that a stage with 2>&1 that fills the pipe reports it instead of raising"""
+    monkeypatch.setattr(session_module, "OUTPUT_LIMIT_BYTES", 1 << 16)
+
+    result = session.run_line("yes 2>&1 | head -n 1")
+
+    assert result.stdout == "y\n"
+    assert "output exceeded" in result.stderr
