@@ -1,22 +1,17 @@
 """PurePython implementation of the bash help command"""
 
 # Standard libraries
-import pkgutil
 from argparse import ArgumentParser
 
 # Project libraries
-import bash_purepython
+from bash_purepython.shell.commands import list_command_names
 
 
 def main():
     """Print the name of every command in the package"""
     parser = ArgumentParser(prog="help", description="Prints all commands")
     parser.parse_args()
-    for _, name, _ in pkgutil.iter_modules(bash_purepython.__path__):
-        if name.startswith("_"):
-            continue
-        print(name, end="  ")
-    print()
+    print("  ".join(list_command_names()))
 
 
 if __name__ == "__main__":

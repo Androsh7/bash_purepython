@@ -23,7 +23,7 @@ def print_error(error: object) -> None:
     Args:
         error: The message to print
     """
-    print(Color.RED, error, Color.RESET, sep="")
+    print(Color.RED, error, Color.RESET, sep="", file=sys.stderr)
     sys.exit(1)
 
 
@@ -33,4 +33,4 @@ def print_warning(error: object) -> None:
     Args:
         error: The message to print
     """
-    print(Color.YELLOW, error, Color.RESET, sep="")
+    print(Color.YELLOW, error, Color.RESET, sep="", file=sys.stderr)
