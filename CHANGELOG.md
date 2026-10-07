@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0
+
+### Added
+
+- `bash_purepython.execute_command`, an asyncio execution engine for bash-like scripts: lazily streaming
+  pipelines, `&&`/`||` lists, `if`/`for`/`while`/`until`, functions, subshells, brace groups, background jobs
+  (`&`, `$!`, `ps`, `kill`, `wait`, `jobs`), redirections, heredocs, parameter and command substitution
+- `bash_purepython.pyodide_session`, the host-facing session for a browser terminal: `PyodideSession` keeps one
+  shell state and executor across calls, `run` returns the exit code, directory and variables as JSON,
+  `HostCommand` relays a command the host implements through the pipeline so it can be piped and redirected,
+  and the Python REPL is Pyodide's own console (`repl_start`, `repl_feed`, `repl_complete`)
+- The coreutils ported onto the `Command` interface: `basename`, `cp`, `cut`, `date`, `dirname`, `env`, `find`,
+  `grep`, `gzip`, `gunzip`, `help`, `ls`, `mkdir`, `mv`, `nl`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`, `seq`
+
+### Removed
+
+- The standalone coreutils scripts and `bash_purepython.shell` (tokenizer, parser, builtins, completion,
+  `ReplSession` and the JSON bridge); the engine and session above replace them. Shell completion and
+  multi-line continuation are now the host's job
+
 ## 0.3.0
 
 ### Added

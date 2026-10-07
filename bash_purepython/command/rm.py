@@ -48,7 +48,12 @@ class RmCommand(Command):
                 continue
             if path.is_dir() and not path.is_symlink():
                 if parsed.recursive:
-                    shutil.rmtree(path)
+                    try:
+                        shutil.rmtree(path)
+                    except OSError as error:
+                        state.write_error(f"rm: cannot remove '{path_text}': {error.strerror}\n")
+                        exit_code = EXIT_CODE_FAILURE
+                        continue
                 elif parsed.dir:
                     try:
                         path.rmdir()
@@ -61,7 +66,12 @@ class RmCommand(Command):
                     exit_code = EXIT_CODE_FAILURE
                     continue
             else:
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError as error:
+                    state.write_error(f"rm: cannot remove '{path_text}': {error.strerror}\n")
+                    exit_code = EXIT_CODE_FAILURE
+                    continue
             if parsed.verbose:
                 lines.append(f"removed '{path_text}'\n")
         return CommandResult(stdout="".join(lines), exit_code=exit_code)
