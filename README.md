@@ -51,8 +51,11 @@ redirections on commands and on compound commands (`>`, `>>`, `<`, `2>`, `2>>`,
 `2>&1`, `&>`, heredocs, here-strings, `/dev/null`), parameter and command
 substitution, and the builtins `cd`, `export`, `unset`, `exit`, `return`,
 `break`, `continue`, `wait`, `jobs`.
-Commands shipped: `cat`, `echo`, `false`, `head`, `kill`, `printf`, `ps`,
-`sleep`, `true`, `yes`.
+Commands shipped: `basename`, `cat`, `cp`, `cut`, `date`, `dirname`, `echo`,
+`env`, `false`, `find`, `grep`, `gunzip`, `gzip`, `head`, `help`, `kill`, `ls`,
+`mkdir`, `mv`, `nl`, `printf`, `ps`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`,
+`seq`, `sleep`, `true`, `yes`. Every command takes `--help`; `-h` is left free
+for the commands that use it, such as `ls -h` and `grep -h`.
 
 Known limitations: `case`, `select`, globbing, arithmetic and process
 substitution are not implemented; a `$( )` substitution that never stops

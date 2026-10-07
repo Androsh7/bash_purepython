@@ -22,7 +22,7 @@ class ArgumentParsingStopped(Exception):  # noqa: N818
 
 
 class CommandArgumentParser(ArgumentParser):
-    """Collect argparse messages and raise instead of exiting"""
+    """Collect argparse messages and raise instead of exiting, with --help as the only help flag so -h stays free"""
 
     def __init__(self, program_name: str, description: str):
         """Create a parser for one command
@@ -31,7 +31,8 @@ class CommandArgumentParser(ArgumentParser):
             program_name: The command name shown in usage and errors
             description: One line describing the command
         """
-        super().__init__(prog=program_name, description=description, add_help=True)
+        super().__init__(prog=program_name, description=description, add_help=False)
+        self.add_argument("--help", action="help", help="show this help message and exit")
         self.messages: list[str] = []
 
     def _print_message(self, message: str, file: object = None) -> None:
