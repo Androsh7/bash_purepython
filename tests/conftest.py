@@ -1,7 +1,7 @@
 """Share fixtures that run scripts against an in-memory shell state"""
 
 # Standard libraries
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,7 +10,7 @@ import pytest
 
 # Project libraries
 from bash_purepython.command.registry import CommandRegistry
-from bash_purepython.execute_command import Executor
+from bash_purepython.execute_command import ShellRunner
 from bash_purepython.shell_state import ShellState
 
 
@@ -26,10 +26,10 @@ class ScriptRun:
 
 @dataclass
 class ShellHarness:
-    """Run scripts against one state and collect their output"""
+    """Run scripts against one state on one event loop and collect their output"""
 
     state: ShellState
-    executor: Executor
+    runner: ShellRunner
     output_pieces: list[str] = field(default_factory=list)
     error_pieces: list[str] = field(default_factory=list)
 
@@ -44,13 +44,17 @@ class ShellHarness:
         """
         self.output_pieces.clear()
         self.error_pieces.clear()
-        exit_code = self.executor.execute_script(script, self.state)
+        exit_code = self.runner.run(script, self.state)
         return ScriptRun(
             stdout="".join(self.output_pieces),
             stderr="".join(self.error_pieces),
             exit_code=exit_code,
             state=self.state,
         )
+
+    def close(self) -> None:
+        """Stop any background jobs and release the event loop"""
+        self.runner.close()
 
 
 def build_harness(cwd: Path, registry: CommandRegistry | None = None) -> ShellHarness:
@@ -67,17 +71,28 @@ def build_harness(cwd: Path, registry: CommandRegistry | None = None) -> ShellHa
     error_pieces: list[str] = []
     state = ShellState(cwd=cwd, write_output=output_pieces.append, write_error=error_pieces.append)
     return ShellHarness(
-        state=state, executor=Executor(registry), output_pieces=output_pieces, error_pieces=error_pieces
+        state=state, runner=ShellRunner(registry), output_pieces=output_pieces, error_pieces=error_pieces
     )
 
 
 @pytest.fixture
-def shell(tmp_path: Path) -> ShellHarness:
+def shell(tmp_path: Path) -> Iterator[ShellHarness]:
     """Return a harness running in a temporary directory with the default commands"""
-    return build_harness(tmp_path)
+    harness = build_harness(tmp_path)
+    yield harness
+    harness.close()
 
 
 @pytest.fixture
-def make_shell(tmp_path: Path) -> Callable[[CommandRegistry], ShellHarness]:
+def make_shell(tmp_path: Path) -> Iterator[Callable[[CommandRegistry], ShellHarness]]:
     """Return a factory for harnesses with a custom registry"""
-    return lambda registry: build_harness(tmp_path, registry)
+    harnesses: list[ShellHarness] = []
+
+    def make(registry: CommandRegistry) -> ShellHarness:
+        harness = build_harness(tmp_path, registry)
+        harnesses.append(harness)
+        return harness
+
+    yield make
+    for harness in harnesses:
+        harness.close()

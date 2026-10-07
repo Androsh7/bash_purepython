@@ -1,6 +1,7 @@
 """Test tokenising simple commands and expanding their words"""
 
 # Standard libraries
+import asyncio
 from pathlib import Path
 
 # Third-party libraries
@@ -31,7 +32,7 @@ def make_state(variables: dict[str, str] | None = None, **state_fields: object) 
     )
 
 
-def echo_substitution(script: str) -> str:
+async def echo_substitution(script: str) -> str:
     """Return a marker for a substitution instead of running it
 
     Args:
@@ -77,7 +78,7 @@ def expand(text: str, state: ShellState | None = None) -> list[str]:
     Returns:
         The expanded fields
     """
-    return expand_words(words_of(text), state or make_state(), echo_substitution)
+    return asyncio.run(expand_words(words_of(text), state or make_state(), echo_substitution))
 
 
 @pytest.mark.parametrize(
@@ -193,11 +194,23 @@ def test_expand_runs_substitutions(text: str, expected: list[str]) -> None:
     assert expand(text) == expected
 
 
+async def multi_line_substitution(script: str) -> str:
+    """Return two lines of output for any substitution
+
+    Args:
+        script: Ignored
+
+    Returns:
+        Text with a space and a newline, to be split or kept whole
+    """
+    return "a b\nc"
+
+
 def test_expand_splits_unquoted_substitution_output() -> None:
     """Check that an unquoted substitution's output is split into fields but a quoted one is not"""
     words = words_of('echo $(x) "$(x)"')
 
-    fields = expand_words(words, make_state(), lambda script: "a b\nc")
+    fields = asyncio.run(expand_words(words, make_state(), multi_line_substitution))
 
     assert fields == ["echo", "a", "b", "c", "a b\nc"]
 
@@ -216,7 +229,10 @@ def test_tokenize_separates_assignments_from_arguments() -> None:
     words, _, assignments = tokenize_simple_command("A=1 B='x y' cmd C=3")
 
     assert [assignment.name for assignment in assignments] == ["A", "B"]
-    assert [expand_word_unsplit(assignment.value, make_state(), echo_substitution) for assignment in assignments] == [
+    assert [
+        asyncio.run(expand_word_unsplit(assignment.value, make_state(), echo_substitution))
+        for assignment in assignments
+    ] == [
         "1",
         "x y",
     ]

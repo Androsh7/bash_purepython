@@ -1,7 +1,7 @@
 """Implement the yes command"""
 
 # Standard libraries
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
 # Project libraries
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
@@ -10,7 +10,7 @@ from bash_purepython.shell_state import EXIT_CODE_SUCCESS
 DEFAULT_TEXT = "y"
 
 
-def repeat_forever(line: str) -> Iterator[str]:
+async def repeat_forever(line: str) -> AsyncIterator[str]:
     """Yield the same line until the consumer closes the generator
 
     Args:

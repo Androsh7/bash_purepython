@@ -6,7 +6,10 @@ from bash_purepython.command.command import Command
 from bash_purepython.command.echo import EchoCommand
 from bash_purepython.command.false_command import FalseCommand
 from bash_purepython.command.head import HeadCommand
+from bash_purepython.command.kill import KillCommand
 from bash_purepython.command.printf import PrintfCommand
+from bash_purepython.command.ps import PsCommand
+from bash_purepython.command.sleep import SleepCommand
 from bash_purepython.command.true_command import TrueCommand
 from bash_purepython.command.yes import YesCommand
 
@@ -15,7 +18,10 @@ COMMAND_CLASSES: tuple[type[Command], ...] = (
     EchoCommand,
     FalseCommand,
     HeadCommand,
+    KillCommand,
     PrintfCommand,
+    PsCommand,
+    SleepCommand,
     TrueCommand,
     YesCommand,
 )

@@ -1,11 +1,11 @@
 """Carry command output lazily between pipeline stages and convert it between kinds"""
 
 # Standard libraries
-from collections.abc import Generator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
 
 # Project libraries
-from bash_purepython.command.command import InputKind, OutputKind
+from bash_purepython.command.command import ExitStatus, InputKind, OutputKind
 from bash_purepython.shell_state import EXIT_CODE_BROKEN_PIPE, EXIT_CODE_SUCCESS
 
 TEXT_ENCODING = "utf-8"
@@ -14,60 +14,116 @@ BYTE_KINDS = frozenset({OutputKind.BYTES, OutputKind.STREAM_BYTES})
 KIND_PREFERENCE = (OutputKind.STREAM_TEXT, OutputKind.STREAM_BYTES, OutputKind.TEXT, OutputKind.BYTES)
 
 
-class TextStream:
-    """Wrap a lazy iterator of text chunks and remember how it finished"""
+def is_async_iterable(value: Any) -> bool:
+    """Return whether a value is iterated with ``async for``
 
-    def __init__(self, source: Iterator[str], provisional_exit_code: int = EXIT_CODE_SUCCESS):
-        """Wrap one iterator
+    Args:
+        value: Any object
+
+    Returns:
+        True for async iterators and async iterables
+    """
+    return hasattr(value, "__aiter__")
+
+
+async def iterate_sync(source: Iterator[Any], exit_status: ExitStatus) -> AsyncIterator[Any]:
+    """Yield from a synchronous iterator, recording a generator's return value as the exit code
+
+    Args:
+        source: The synchronous iterator
+        exit_status: Receives the generator's integer return value, if it returns one
+
+    Yields:
+        Each item of the source
+    """
+    try:
+        while True:
+            try:
+                item = next(source)
+            except StopIteration as stop:
+                if isinstance(stop.value, int):
+                    exit_status.code = stop.value
+                return
+            yield item
+    finally:
+        close = getattr(source, "close", None)
+        if close is not None:
+            close()
+
+
+class TextStream:
+    """Wrap a lazy source of text chunks, synchronous or asynchronous, and remember how it finished"""
+
+    def __init__(
+        self,
+        source: Any,
+        provisional_exit_code: int = EXIT_CODE_SUCCESS,
+        exit_status: ExitStatus | None = None,
+        on_close: Callable[[], Awaitable[None]] | None = None,
+    ):
+        """Wrap one source
 
         Args:
-            source: The chunks, pulled only as the consumer asks for them
+            source: An iterator or async iterator of chunks, pulled only as the consumer asks for them
             provisional_exit_code: The exit code reported until the source finishes
+            exit_status: Where the producer records its final exit code, if it has one
+            on_close: Awaited when the stream is closed early, to stop the producer
         """
-        self._source = source
-        self.exit_code = provisional_exit_code
+        self.exit_status = exit_status if exit_status is not None else ExitStatus(provisional_exit_code)
+        self._source: AsyncIterator[Any] = (
+            source.__aiter__() if is_async_iterable(source) else iterate_sync(iter(source), self.exit_status)
+        )
         self.finished = False
         self.upstream: TextStream | None = None
+        self.on_close = on_close
 
-    def __iter__(self) -> Iterator[str]:
-        """Yield every chunk, recording the generator's return value as the exit code"""
+    @property
+    def exit_code(self) -> int:
+        """Return the exit code known so far"""
+        return self.exit_status.code
+
+    def __aiter__(self) -> AsyncIterator[str]:
+        """Return the stream itself as its iterator"""
+        return self
+
+    async def __anext__(self) -> str:
+        """Pull the next chunk, closing the upstream once the source is exhausted
+
+        Raises:
+            StopAsyncIteration: When the source has no more chunks
+        """
         if self.finished:
-            return
+            raise StopAsyncIteration
         try:
-            while True:
-                try:
-                    chunk = next(self._source)
-                except StopIteration as stop:
-                    if isinstance(stop.value, int):
-                        self.exit_code = stop.value
-                    self.finished = True
-                    self._close_upstream()
-                    return
-                yield chunk
-        finally:
-            if not self.finished:
-                self.close()
+            return await self._source.__anext__()
+        except StopAsyncIteration:
+            self.finished = True
+            await self._close_upstream()
+            raise
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         """Stop pulling from the source and mark the stream as cut short"""
         if self.finished:
             return
         self.finished = True
-        self.exit_code = EXIT_CODE_BROKEN_PIPE
-        close = getattr(self._source, "close", None)
-        if close is not None:
-            close()
-        self._close_upstream()
+        self.exit_status.code = EXIT_CODE_BROKEN_PIPE
+        aclose = getattr(self._source, "aclose", None)
+        if aclose is not None:
+            await aclose()
+        if self.on_close is not None:
+            await self.on_close()
+        await self._close_upstream()
 
-    def _close_upstream(self) -> None:
+    async def _close_upstream(self) -> None:
         """Stop the stream feeding this one, if any"""
         if self.upstream is not None:
-            self.upstream.close()
-            self.upstream = None
+            upstream, self.upstream = self.upstream, None
+            await upstream.aclose()
 
-    def read_all(self) -> str:
+    async def read_all(self) -> str:
         """Return every remaining chunk joined into one string"""
-        return "".join(self)
+        pieces = [chunk async for chunk in self]
+        return "".join(pieces)
 
 
 def choose_kinds(
@@ -94,33 +150,96 @@ def choose_kinds(
     return producer_kind, InputKind(consumer_kind)
 
 
-def decode_chunks(chunks: Iterator[bytes]) -> Generator[str, None, int]:
+def as_async_iterator(value: Any) -> AsyncIterator[Any]:
+    """Return a value as an async iterator, wrapping a synchronous iterator when needed
+
+    Args:
+        value: An iterator, iterable, async iterator or async iterable
+
+    Returns:
+        An async iterator over the same items
+    """
+    if is_async_iterable(value):
+        return value.__aiter__()
+    return iterate_sync(iter(value), ExitStatus())
+
+
+async def decode_chunks(chunks: Any) -> AsyncIterator[str]:
     """Yield each byte chunk decoded as text
 
     Args:
-        chunks: The byte chunks to decode
+        chunks: The byte chunks to decode, synchronous or asynchronous
 
-    Returns:
-        The exit code of the source, if it was a generator that returned one
+    Yields:
+        The decoded text
     """
-    exit_code = yield from (chunk.decode(TEXT_ENCODING, errors="replace") for chunk in chunks)
-    return exit_code if isinstance(exit_code, int) else EXIT_CODE_SUCCESS
+    source = as_async_iterator(chunks)
+    try:
+        async for chunk in source:
+            yield chunk.decode(TEXT_ENCODING, errors="replace")
+    finally:
+        await close_iterator(source)
 
 
-def encode_chunks(chunks: Iterator[str]) -> Generator[bytes, None, int]:
+async def encode_chunks(chunks: Any) -> AsyncIterator[bytes]:
     """Yield each text chunk encoded as bytes
 
     Args:
-        chunks: The text chunks to encode
+        chunks: The text chunks to encode, synchronous or asynchronous
+
+    Yields:
+        The encoded bytes
+    """
+    source = as_async_iterator(chunks)
+    try:
+        async for chunk in source:
+            yield chunk.encode(TEXT_ENCODING)
+    finally:
+        await close_iterator(source)
+
+
+async def single_chunk(value: Any) -> AsyncIterator[Any]:
+    """Yield one value as a stream of one chunk
+
+    Args:
+        value: The whole output
+
+    Yields:
+        The value, once
+    """
+    yield value
+
+
+async def close_iterator(source: Any) -> None:
+    """Stop a producer the consumer needs nothing more from
+
+    Args:
+        source: An iterator, async iterator, or anything else, which is closed when it can be
+    """
+    aclose = getattr(source, "aclose", None)
+    if aclose is not None:
+        await aclose()
+        return
+    close = getattr(source, "close", None)
+    if close is not None:
+        close()
+
+
+async def join_stream(chunks: Any, as_bytes: bool) -> Any:
+    """Return every chunk of a stream joined together
+
+    Args:
+        chunks: The stream, synchronous or asynchronous
+        as_bytes: Whether the chunks are bytes rather than text
 
     Returns:
-        The exit code of the source, if it was a generator that returned one
+        The joined bytes or text
     """
-    exit_code = yield from (chunk.encode(TEXT_ENCODING) for chunk in chunks)
-    return exit_code if isinstance(exit_code, int) else EXIT_CODE_SUCCESS
+    pieces = [chunk async for chunk in as_async_iterator(chunks)]
+    return b"".join(pieces) if as_bytes else "".join(pieces)
 
 
-def convert(value: Any, from_kind: OutputKind, to_kind: OutputKind) -> Any:
+async def convert(value: Any, from_kind: OutputKind, to_kind: OutputKind) -> Any:
     """Return the value re-shaped into another kind
 
     Args:
@@ -136,17 +255,18 @@ def convert(value: Any, from_kind: OutputKind, to_kind: OutputKind) -> Any:
     if from_kind in STREAM_KINDS and to_kind in STREAM_KINDS:
         return decode_chunks(value) if from_kind == OutputKind.STREAM_BYTES else encode_chunks(value)
     if from_kind in STREAM_KINDS:
-        joined = b"".join(value) if from_kind == OutputKind.STREAM_BYTES else "".join(value)
-        return convert(joined, OutputKind.BYTES if from_kind == OutputKind.STREAM_BYTES else OutputKind.TEXT, to_kind)
+        joined = await join_stream(value, as_bytes=from_kind == OutputKind.STREAM_BYTES)
+        static_kind = OutputKind.BYTES if from_kind == OutputKind.STREAM_BYTES else OutputKind.TEXT
+        return await convert(joined, static_kind, to_kind)
     if to_kind in STREAM_KINDS:
         static_kind = OutputKind.BYTES if to_kind == OutputKind.STREAM_BYTES else OutputKind.TEXT
-        return iter([convert(value, from_kind, static_kind)])
+        return single_chunk(await convert(value, from_kind, static_kind))
     if to_kind == OutputKind.BYTES:
         return value.encode(TEXT_ENCODING)
     return value.decode(TEXT_ENCODING, errors="replace")
 
 
-def materialise_text(value: Any, kind: OutputKind) -> str:
+async def materialise_text(value: Any, kind: OutputKind) -> str:
     """Return the whole output as one string
 
     Args:
@@ -156,4 +276,4 @@ def materialise_text(value: Any, kind: OutputKind) -> str:
     Returns:
         The output decoded and joined
     """
-    return convert(value, kind, OutputKind.TEXT)
+    return await convert(value, kind, OutputKind.TEXT)

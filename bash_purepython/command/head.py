@@ -2,13 +2,14 @@
 
 # Standard libraries
 import re
-from collections.abc import Generator, Iterator
+from collections.abc import AsyncIterator
 
 # Project libraries
 from bash_purepython.command.arguments import CommandArgumentParser, parse_command_arguments
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
-from bash_purepython.command.lines import close_stdin, stdin_lines
-from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, NULL_DEVICE_PATH, ShellState
+from bash_purepython.command.lines import close_stdin, file_lines, stdin_lines
+from bash_purepython.shell_state import EXIT_CODE_FAILURE, NULL_DEVICE_PATH, ShellState
+from bash_purepython.streams import as_async_iterator, close_iterator
 
 DEFAULT_LINE_COUNT = 10
 STDIN_PATH = "-"
@@ -38,7 +39,7 @@ def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
     return expanded
 
 
-def take_lines(lines: Iterator[str], limit: int) -> Iterator[str]:
+async def take_lines(lines: AsyncIterator[str], limit: int) -> AsyncIterator[str]:
     """Yield at most limit lines, pulling no more than needed
 
     Args:
@@ -48,15 +49,20 @@ def take_lines(lines: Iterator[str], limit: int) -> Iterator[str]:
     Yields:
         The first lines
     """
-    if limit <= 0:
-        return
-    for taken, line in enumerate(lines, start=1):
-        yield line
-        if taken >= limit:
+    try:
+        if limit <= 0:
             return
+        taken = 0
+        async for line in lines:
+            yield line
+            taken += 1
+            if taken >= limit:
+                return
+    finally:
+        await close_iterator(lines)
 
 
-def take_characters(lines: Iterator[str], limit: int) -> Iterator[str]:
+async def take_characters(lines: AsyncIterator[str], limit: int) -> AsyncIterator[str]:
     """Yield text up to limit characters, pulling no more than needed
 
     Args:
@@ -67,15 +73,20 @@ def take_characters(lines: Iterator[str], limit: int) -> Iterator[str]:
         Pieces of the first lines
     """
     remaining = limit
-    for line in lines:
+    try:
         if remaining <= 0:
             return
-        piece = line[:remaining]
-        remaining -= len(piece)
-        yield piece
+        async for line in lines:
+            piece = line[:remaining]
+            remaining -= len(piece)
+            yield piece
+            if remaining <= 0:
+                return
+    finally:
+        await close_iterator(lines)
 
 
-def source_lines(path_text: str, invocation: CommandInvocation) -> Iterator[str] | None:
+def source_lines(path_text: str, invocation: CommandInvocation) -> AsyncIterator[str] | None:
     """Return the lines of one source, or None after reporting why it cannot be read
 
     Args:
@@ -83,14 +94,14 @@ def source_lines(path_text: str, invocation: CommandInvocation) -> Iterator[str]
         invocation: The call, providing standard input and the shell state
 
     Returns:
-        An iterator over the lines, or None
+        An async iterator over the lines, or None
     """
     if path_text == STDIN_PATH:
         return stdin_lines(invocation.stdin, invocation.stdin_kind)
     return read_file_lines(path_text, invocation.state)
 
 
-def read_file_lines(path_text: str, state: ShellState) -> Iterator[str] | None:
+def read_file_lines(path_text: str, state: ShellState) -> AsyncIterator[str] | None:
     """Return the lines of one file, or None after reporting why it cannot be read
 
     Args:
@@ -98,25 +109,23 @@ def read_file_lines(path_text: str, state: ShellState) -> Iterator[str] | None:
         state: The shell state for resolving the path and reporting errors
 
     Returns:
-        An iterator over the lines, or None
+        An async iterator over the lines, or None
     """
     if path_text == NULL_DEVICE_PATH:
-        return iter(())
+        return as_async_iterator(())
     path = state.resolve_path(path_text)
     if path.is_dir():
         state.write_error(f"head: error reading '{path_text}': Is a directory\n")
         return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
+    if not path.exists():
         state.write_error(f"head: cannot open '{path_text}' for reading: No such file or directory\n")
         return None
-    return iter(text.splitlines(keepends=True))
+    return file_lines(path)
 
 
-def head_sources(
+async def head_sources(
     invocation: CommandInvocation, paths: list[str], line_limit: int, character_limit: int | None, show_headers: bool
-) -> Generator[str, None, int]:
+) -> AsyncIterator[str]:
     """Yield the head of every source, then close standard input so an endless producer stops
 
     Args:
@@ -126,28 +135,30 @@ def head_sources(
         character_limit: Characters to keep, or None
         show_headers: Whether to print a ``==> name <==`` header before each source
 
-    Returns:
-        Zero when every source was read, otherwise one
+    Yields:
+        The first lines or characters of each source, with headers when asked
     """
-    exit_code = EXIT_CODE_SUCCESS
     printed_any_source = False
     try:
         for path_text in paths:
             lines = source_lines(path_text, invocation)
             if lines is None:
-                exit_code = EXIT_CODE_FAILURE
+                invocation.exit_status.code = EXIT_CODE_FAILURE
                 continue
             if show_headers:
                 label = STDIN_LABEL if path_text == STDIN_PATH else path_text
                 yield ("\n" if printed_any_source else "") + f"==> {label} <==\n"
             printed_any_source = True
-            if character_limit is None:
-                yield from take_lines(lines, line_limit)
-            else:
-                yield from take_characters(lines, character_limit)
+            limited = (
+                take_lines(lines, line_limit) if character_limit is None else take_characters(lines, character_limit)
+            )
+            try:
+                async for piece in limited:
+                    yield piece
+            finally:
+                await close_iterator(limited)
     finally:
-        close_stdin(invocation.stdin)
-    return exit_code
+        await close_stdin(invocation.stdin)
 
 
 class HeadCommand(Command):
@@ -157,7 +168,7 @@ class HeadCommand(Command):
     input_kinds = frozenset({InputKind.STREAM_TEXT, InputKind.TEXT, InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 
-    def run(self, invocation: CommandInvocation) -> CommandResult:
+    async def run(self, invocation: CommandInvocation) -> CommandResult:
         """Return a stream of the first lines or characters of each source
 
         Args:
@@ -174,9 +185,9 @@ class HeadCommand(Command):
         parser.add_argument("paths", nargs="*", help="files to read, - for standard input")
         parsed = parse_command_arguments(parser, expand_numeric_shorthand(invocation.arguments), invocation.state)
         if isinstance(parsed, int):
-            close_stdin(invocation.stdin)
-            return CommandResult(stdout=iter(()), exit_code=parsed)
+            await close_stdin(invocation.stdin)
+            return CommandResult(stdout=as_async_iterator(()), exit_code=parsed)
         paths = parsed.paths or [STDIN_PATH]
         show_headers = parsed.verbose or (len(paths) > 1 and not parsed.quiet)
         stream = head_sources(invocation, paths, parsed.lines, parsed.bytes, show_headers)
-        return CommandResult(stdout=stream, exit_code=EXIT_CODE_SUCCESS)
+        return CommandResult(stdout=stream, exit_code=invocation.exit_status.code)

@@ -64,6 +64,7 @@ class BackgroundNode:
     """Hold a command that was followed by a background ampersand"""
 
     inner: "PlanNode"
+    command_text: str
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,7 @@
 
 # Standard libraries
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -15,7 +15,7 @@ WHITESPACE_CHARACTERS = frozenset(" \t\n")
 WORD_SPLIT_PATTERN = re.compile(r"([ \t\n]+)")
 ASSIGNMENT_PATTERN = re.compile(r"^([A-Za-z_]\w*)=")
 VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_]\w*")
-SPECIAL_PARAMETER_CHARACTERS = frozenset("?#@*$0123456789")
+SPECIAL_PARAMETER_CHARACTERS = frozenset("?#@*$!0123456789")
 HEREDOC_DELIMITER_PATTERN = re.compile(r"(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|(\\?[^\s;&|()<>'\"]+))")
 DOUBLE_QUOTE_ESCAPABLE_CHARACTERS = frozenset('$`"\\\n')
 ECHO_ESCAPE_SEQUENCES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "\\": "\\"}
@@ -24,7 +24,7 @@ SHELL_NAME = "bash"
 POSITIONAL_FIELD_SEPARATOR = "\x1f"
 ALL_POSITIONAL_SPELLINGS = frozenset({"$@", "${@}"})
 
-RunSubstitution = Callable[[str], str]
+RunSubstitution = Callable[[str], Awaitable[str]]
 
 
 class QuoteStyle(StrEnum):
@@ -459,7 +459,7 @@ def lookup_parameter(name: str, state: ShellState) -> str:
     """Return the value of a variable or special parameter, empty when unset
 
     Args:
-        name: A variable name, a digit, or one of ``? # @ * $ 0``
+        name: A variable name, a digit, or one of ``? # @ * $ ! 0``
         state: The shell state holding variables, positional arguments and the last exit code
 
     Returns:
@@ -473,6 +473,8 @@ def lookup_parameter(name: str, state: ShellState) -> str:
         return " ".join(state.positional_arguments)
     if name == "0":
         return SHELL_NAME
+    if name == "!":
+        return "" if state.last_background_pid is None else str(state.last_background_pid)
     if name.isdigit():
         index = int(name) - 1
         return state.positional_arguments[index] if 0 <= index < len(state.positional_arguments) else ""
@@ -481,7 +483,9 @@ def lookup_parameter(name: str, state: ShellState) -> str:
     return state.variables.get(name, "")
 
 
-def expand_operand(operand: str, state: ShellState, run_substitution: RunSubstitution, in_double_quotes: bool) -> str:
+async def expand_operand(
+    operand: str, state: ShellState, run_substitution: RunSubstitution, in_double_quotes: bool
+) -> str:
     """Return the word after a ``${name:-...}`` style operator, expanded as bash expands it
 
     Outside double quotes the operand is a word of its own, so its quotes are removed; inside them it is plain text
@@ -501,11 +505,11 @@ def expand_operand(operand: str, state: ShellState, run_substitution: RunSubstit
         except ShellSyntaxError:
             words, redirections, assignments = [], [], []
         if len(words) == 1 and not redirections and not assignments:
-            return expand_word_unsplit(words[0], state, run_substitution)
-    return expand_text(operand, state, run_substitution, in_double_quotes=True)
+            return await expand_word_unsplit(words[0], state, run_substitution)
+    return await expand_text(operand, state, run_substitution, in_double_quotes=True)
 
 
-def expand_braced_parameter(
+async def expand_braced_parameter(
     expression: str,
     state: ShellState,
     run_substitution: RunSubstitution,
@@ -529,7 +533,7 @@ def expand_braced_parameter(
     """
     if expression.startswith("#"):
         return str(len(lookup_parameter(expression[1:], state)))
-    match = re.match(r"^([A-Za-z_]\w*|[?#@*$0-9])(:?[-=+?])?(.*)$", expression, re.DOTALL)
+    match = re.match(r"^([A-Za-z_]\w*|[?#@*$!0-9])(:?[-=+?])?(.*)$", expression, re.DOTALL)
     if match is None:
         raise ExpansionError(f"${{{expression}}}: bad substitution")
     name, operator, operand = match.group(1), match.group(2), match.group(3)
@@ -540,20 +544,22 @@ def expand_braced_parameter(
         if operand:
             raise ExpansionError(f"${{{expression}}}: bad substitution")
         return value
-    is_set = name in state.variables or (name.isdigit() and value != "") or name in "?#@*$0"
+    is_set = name in state.variables or (name.isdigit() and value != "") or name in "?#@*$!0"
     treat_empty_as_unset = operator.startswith(":")
     missing = not is_set or (treat_empty_as_unset and value == "")
     if operator.endswith("-"):
-        return expand_operand(operand, state, run_substitution, in_double_quotes) if missing else value
+        return await expand_operand(operand, state, run_substitution, in_double_quotes) if missing else value
     if operator.endswith("+"):
-        return "" if missing else expand_operand(operand, state, run_substitution, in_double_quotes)
+        return "" if missing else await expand_operand(operand, state, run_substitution, in_double_quotes)
     if operator.endswith("="):
         if missing:
-            value = expand_operand(operand, state, run_substitution, in_double_quotes)
+            value = await expand_operand(operand, state, run_substitution, in_double_quotes)
             state.variables[name] = value
         return value
     if missing:
-        message = expand_operand(operand, state, run_substitution, in_double_quotes) or "parameter null or not set"
+        message = (
+            await expand_operand(operand, state, run_substitution, in_double_quotes) or "parameter null or not set"
+        )
         raise ExpansionError(f"{name}: {message}")
     return value
 
@@ -590,7 +596,7 @@ def find_balanced_end(text: str, start: int, opening: str, closing: str) -> int:
     raise ShellSyntaxError(f"unbalanced {opening}: {text}")
 
 
-def expand_text(
+async def expand_text(
     text: str,
     state: ShellState,
     run_substitution: RunSubstitution,
@@ -621,16 +627,18 @@ def expand_text(
             closing_index = text.find("`", index + 1)
             if closing_index == -1:
                 raise ShellSyntaxError(f"unclosed backtick: {text}")
-            pieces.append(run_substitution(text[index + 1 : closing_index]))
+            pieces.append(await run_substitution(text[index + 1 : closing_index]))
             index = closing_index + 1
         elif text.startswith("$(", index):
             end = find_balanced_end(text, index + 1, "(", ")")
-            pieces.append(run_substitution(text[index + 2 : end - 1]))
+            pieces.append(await run_substitution(text[index + 2 : end - 1]))
             index = end
         elif text.startswith("${", index):
             end = find_balanced_end(text, index + 1, "{", "}")
             braced = text[index + 2 : end - 1]
-            pieces.append(expand_braced_parameter(braced, state, run_substitution, in_double_quotes, split_positional))
+            pieces.append(
+                await expand_braced_parameter(braced, state, run_substitution, in_double_quotes, split_positional)
+            )
             index = end
         elif character == "$":
             match = VARIABLE_NAME_PATTERN.match(text, index + 1)
@@ -667,7 +675,7 @@ def expand_tilde(text: str, state: ShellState) -> str:
     return text
 
 
-def expand_word(word: Word, state: ShellState, run_substitution: RunSubstitution) -> list[str]:
+async def expand_word(word: Word, state: ShellState, run_substitution: RunSubstitution) -> list[str]:
     """Return the fields one word expands to
 
     Unquoted expansions are split on whitespace and dropped when empty; quoted text is kept whole
@@ -687,7 +695,9 @@ def expand_word(word: Word, state: ShellState, run_substitution: RunSubstitution
             current = (current or "") + part.text
             continue
         if part.quote == QuoteStyle.DOUBLE:
-            expanded = expand_text(part.text, state, run_substitution, in_double_quotes=True, split_positional=True)
+            expanded = await expand_text(
+                part.text, state, run_substitution, in_double_quotes=True, split_positional=True
+            )
             if expanded == "" and part.text in ALL_POSITIONAL_SPELLINGS:
                 continue
             positional_fields = expanded.split(POSITIONAL_FIELD_SEPARATOR)
@@ -697,7 +707,7 @@ def expand_word(word: Word, state: ShellState, run_substitution: RunSubstitution
                 current = positional_field
             continue
         text = expand_tilde(part.text, state) if part_index == 0 else part.text
-        expanded = expand_text(text, state, run_substitution, in_double_quotes=False)
+        expanded = await expand_text(text, state, run_substitution, in_double_quotes=False)
         for token in WORD_SPLIT_PATTERN.split(expanded):
             if not token:
                 continue
@@ -712,7 +722,7 @@ def expand_word(word: Word, state: ShellState, run_substitution: RunSubstitution
     return fields
 
 
-def expand_words(words: list[Word], state: ShellState, run_substitution: RunSubstitution) -> list[str]:
+async def expand_words(words: list[Word], state: ShellState, run_substitution: RunSubstitution) -> list[str]:
     """Return the fields a list of words expands to
 
     Args:
@@ -723,10 +733,13 @@ def expand_words(words: list[Word], state: ShellState, run_substitution: RunSubs
     Returns:
         Every field from every word, in order
     """
-    return [field for word in words for field in expand_word(word, state, run_substitution)]
+    fields: list[str] = []
+    for word in words:
+        fields.extend(await expand_word(word, state, run_substitution))
+    return fields
 
 
-def expand_word_unsplit(word: Word, state: ShellState, run_substitution: RunSubstitution) -> str:
+async def expand_word_unsplit(word: Word, state: ShellState, run_substitution: RunSubstitution) -> str:
     """Return one word expanded without word splitting, as for an assignment value or redirection target
 
     Args:
@@ -742,14 +755,14 @@ def expand_word_unsplit(word: Word, state: ShellState, run_substitution: RunSubs
         if part.quote == QuoteStyle.SINGLE:
             pieces.append(part.text)
         elif part.quote == QuoteStyle.DOUBLE:
-            pieces.append(expand_text(part.text, state, run_substitution, in_double_quotes=True))
+            pieces.append(await expand_text(part.text, state, run_substitution, in_double_quotes=True))
         else:
             text = expand_tilde(part.text, state) if part_index == 0 else part.text
-            pieces.append(expand_text(text, state, run_substitution, in_double_quotes=False))
+            pieces.append(await expand_text(text, state, run_substitution, in_double_quotes=False))
     return "".join(pieces)
 
 
-def expand_raw_word(text: str, state: ShellState, run_substitution: RunSubstitution) -> str:
+async def expand_raw_word(text: str, state: ShellState, run_substitution: RunSubstitution) -> str:
     """Return a raw quoted word, such as a redirection target, expanded to one value
 
     Args:
@@ -763,4 +776,4 @@ def expand_raw_word(text: str, state: ShellState, run_substitution: RunSubstitut
     words, redirections, assignments = tokenize_simple_command(text)
     if len(words) != 1 or redirections or assignments:
         raise ShellSyntaxError(f"expected one word: {text}")
-    return expand_word_unsplit(words[0], state, run_substitution)
+    return await expand_word_unsplit(words[0], state, run_substitution)

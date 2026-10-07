@@ -444,9 +444,11 @@ class ScriptSplitter:
         """Return the block type of the command being finished, from what was seen at its top level
 
         Returns:
-            The most structural feature seen: a list operator, then the opening keyword or bracket, then a
-            background ampersand, then a heredoc, otherwise a plain command
+            A background ampersand first, then a list operator, then the opening keyword or bracket, then a
+            heredoc, otherwise a plain command
         """
+        if self.ends_in_background:
+            return CommandBlockType.BACKGROUND_COMMAND
         if self.saw_top_level_and_or:
             return CommandBlockType.AND_OR_LIST
         if self.saw_top_level_pipe:
@@ -457,8 +459,6 @@ class ScriptSplitter:
             return CommandBlockType.FUNCTION
         if self.opening_bracket in OPENING_BRACKET_BLOCK_TYPES:
             return OPENING_BRACKET_BLOCK_TYPES[self.opening_bracket]
-        if self.ends_in_background:
-            return CommandBlockType.BACKGROUND_COMMAND
         if self.saw_top_level_heredoc:
             return CommandBlockType.MULTILINE_CAT
         return CommandBlockType.COMMAND

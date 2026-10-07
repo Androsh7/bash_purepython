@@ -87,7 +87,7 @@ def parse_command_arguments(parser: CommandArgumentParser, arguments: list[str],
     try:
         namespace = parser.parse_args(arguments)
     except ArgumentParsingStopped as stopped:
-        sink = state.write_output if stopped.exit_code == EXIT_CODE_SUCCESS else state.write_error
+        sink = state.output_sink.write_sync if stopped.exit_code == EXIT_CODE_SUCCESS else state.write_error
         for message in parser.messages:
             sink(message)
         return stopped.exit_code

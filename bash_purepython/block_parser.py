@@ -411,7 +411,7 @@ def build_plan(block: CommandBlock) -> PlanNode:
         inner_blocks = split_script_into_connected_commands(inner_text)
         if len(inner_blocks) != 1:
             raise ShellSyntaxError(f"expected one command before &: {text}")
-        return BackgroundNode(inner=build_plan(inner_blocks[0]))
+        return BackgroundNode(inner=build_plan(inner_blocks[0]), command_text=inner_text)
     if block_type in (CommandBlockType.SUBSHELL, CommandBlockType.BRACE_GROUP):
         return parse_group(text, block_type)
     if block_type == CommandBlockType.IF:

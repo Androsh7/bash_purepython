@@ -127,7 +127,7 @@ def test_build_plan_unwraps_a_background_command() -> None:
     """Check that the trailing ampersand is removed and the command wrapped"""
     node = plan_for("sleep 1 &")
 
-    assert node == BackgroundNode(inner=SimpleCommandNode("sleep 1"))
+    assert node == BackgroundNode(inner=SimpleCommandNode("sleep 1"), command_text="sleep 1")
 
 
 def test_build_plan_makes_a_subshell_with_redirection() -> None:

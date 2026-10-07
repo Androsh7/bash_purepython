@@ -1,6 +1,7 @@
 """Test the parse, plan, execute loop end to end"""
 
 # Standard libraries
+import asyncio
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -473,7 +474,7 @@ def test_last_command_streams_stdout_and_stderr_incrementally(tmp_path: Path) ->
         write_error=lambda text: arrivals.append(("stderr", text)),
     )
 
-    Executor(registry).execute_script("yes | head -n 2 | interleaved", state)
+    asyncio.run(Executor(registry).run_script_async("yes | head -n 2 | interleaved", state))
 
     assert arrivals == [("stdout", "out one\n"), ("stderr", "err between\n"), ("stdout", "out two\n")]
 
@@ -482,7 +483,7 @@ def test_state_records_stdout_and_stderr_separately(tmp_path: Path) -> None:
     """Check that the state keeps everything written to each stream as well as streaming it"""
     state = ShellState(cwd=tmp_path, write_output=lambda text: None, write_error=lambda text: None)
 
-    Executor().execute_script("echo shown; cat missing.txt; echo more", state)
+    asyncio.run(Executor().run_script_async("echo shown; cat missing.txt; echo more", state))
 
     assert state.stdout == "shown\nmore\n"
     assert "missing.txt" in state.stderr
@@ -492,7 +493,7 @@ def test_recorded_output_excludes_captured_substitutions(tmp_path: Path) -> None
     """Check that output consumed by a substitution or a redirection is not recorded as terminal output"""
     state = ShellState(cwd=tmp_path, write_output=lambda text: None, write_error=lambda text: None)
 
-    Executor().execute_script("echo $(echo inner); echo hidden > out.txt", state)
+    asyncio.run(Executor().run_script_async("echo $(echo inner); echo hidden > out.txt", state))
 
     assert state.stdout == "inner\n"
 
@@ -600,15 +601,91 @@ def test_piped_input_is_read_once_by_the_first_reader(shell: ShellHarness) -> No
     assert run.stdout == "skip\nin\n"
 
 
-def test_endless_producer_inside_a_group_hits_the_output_limit(tmp_path: Path) -> None:
-    """Check that a group that never stops writing is cut off with an error instead of hanging"""
+def test_endless_producer_in_a_substitution_hits_the_output_limit(tmp_path: Path) -> None:
+    """Check that a substitution that never stops writing is cut off with an error instead of hanging"""
     pieces: list[str] = []
     errors: list[str] = []
     state = ShellState(cwd=tmp_path, write_output=pieces.append, write_error=errors.append)
     executor = Executor(output_limit_characters=1000)
 
-    exit_code = executor.execute_script("( yes ) | head -n 2; echo after", state)
+    exit_code = asyncio.run(executor.run_script_async("x=$(yes); echo after", state))
 
-    assert "".join(pieces) == "y\ny\nafter\n"
+    assert "".join(pieces) == "after\n"
     assert exit_code == 0
     assert errors != []
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_stdout"),
+    [
+        ("( yes ) | head -n 2", "y\ny\n"),
+        ("{ yes; } | head -n 2", "y\ny\n"),
+        ("while true; do echo y; done | head -n 2", "y\ny\n"),
+        ("for i in 1 2 3 4 5; do echo $i; done | head -n 1", "1\n"),
+        ("f() { yes; }; f | head -n 1", "y\n"),
+        ("if true; then yes; fi | head -n 1", "y\n"),
+        ("( yes ) | ( head -n 1 )", "y\n"),
+        ("x=1; { x=2; } | cat; echo $x", "1\n"),
+    ],
+    ids=[
+        "subshell_streams",
+        "group_streams",
+        "while_streams",
+        "for_streams",
+        "function_streams",
+        "if_streams",
+        "subshell_into_subshell",
+        "group_stage_runs_in_a_subshell",
+    ],
+)
+def test_compound_pipeline_stages_stream(shell: ShellHarness, script: str, expected_stdout: str) -> None:
+    """Check that an endless or long compound producer in a pipeline is stopped by its consumer, not buffered"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.stderr) == (expected_stdout, "")
+
+
+class AwaitingUpperCommand(Command):
+    """Upper-case input after yielding to the event loop, as a command awaiting a host promise would"""
+
+    name = "awaitupper"
+    input_kinds = frozenset({InputKind.TEXT})
+    output_kinds = frozenset({OutputKind.TEXT})
+
+    async def run(self, invocation: CommandInvocation) -> CommandResult:
+        """Return the input upper-cased after awaiting
+
+        Args:
+            invocation: The call
+
+        Returns:
+            The upper-cased text
+        """
+        await asyncio.sleep(0)
+        return CommandResult(stdout=(invocation.stdin or "").upper(), exit_code=EXIT_CODE_SUCCESS)
+
+
+def test_async_command_runs_inside_a_pipeline(make_shell: Callable[[CommandRegistry], ShellHarness]) -> None:
+    """Check that a command whose run is a coroutine works as a pipeline stage"""
+    registry = CommandRegistry()
+    registry.register(AwaitingUpperCommand())
+    shell = make_shell(registry)
+
+    run = shell.run("echo hi | awaitupper | cat")
+
+    assert run.stdout == "HI\n"
+
+
+def test_async_output_sink_receives_chunks(tmp_path: Path) -> None:
+    """Check that a sink returning an awaitable, like a JavaScript callback, is awaited per chunk"""
+    received: list[str] = []
+
+    async def receive(text: str) -> None:
+        await asyncio.sleep(0)
+        received.append(text)
+
+    state = ShellState(cwd=tmp_path, write_output=receive, write_error=lambda text: None)
+
+    asyncio.run(Executor().run_script_async("yes | head -n 2; echo done", state))
+
+    assert received == ["y\n", "y\n", "done\n"]

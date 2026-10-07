@@ -613,6 +613,16 @@ SCRIPTS = [
     "(echo $?)",
     "{ echo a; } > out 2>&1; cat out",
     "{ cat missing; } > out 2>&1; head -c 3 out",
+    "( yes ) | head -n 2",
+    "{ yes; } | head -n 2",
+    "while true; do echo y; done | head -n 1",
+    "for i in 1 2 3; do echo $i; done | head -n 1",
+    "f() { yes; }; f | head -n 1",
+    "sleep 0 & wait; echo done",
+    "{ sleep 0.05; echo late; } & echo first; wait",
+    "false & wait $!; echo $?",
+    "( yes ) | ( head -n 1 )",
+    "x=1; { x=2; } | cat; echo $x",
 ]
 
 
