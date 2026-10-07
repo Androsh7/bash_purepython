@@ -680,6 +680,20 @@ SCRIPTS = [
     "mkdir empty; ls empty | cat; ls -a empty | cat; ls -A empty | cat; echo end",
     "printf x > small; printf xxxxxxxxxxxxxxxxxxxx > large; ls -S | cat; ls -Sr | cat; ls -1S",
     "mkdir d; echo f > f; ls d f | cat; ls -d d f | cat; ls -1 f d",
+    "printf '%s\\n' 'echo \"$# args: $1 and $2\"' > s.sh; bash s.sh first 'second word'; sh s.sh a b",
+    "printf '%s\\n' 'echo before' 'exit 4' 'echo after' > s.sh; bash s.sh; echo \"rc=$?\"",
+    "printf '%s\\n' 'name=inside' > s.sh; name=outside; bash s.sh; echo $name",
+    "printf '%s\\n' 'name=sourced' 'hello() { echo \"hello $1\"; }' > l.sh; source l.sh; echo $name; hello you",
+    "printf '%s\\n' 'name=dotted' > lib.sh; . lib.sh; echo $name",
+    "printf '%s\\n' 'echo first' 'return 6' 'echo never' > e.sh; source e.sh; echo \"rc=$?\"",
+    "bash -c 'echo \"$1-$2\"' name one two; bash -c 'exit 9'; echo $?",
+    "echo 'echo from stdin' | bash; echo 'exit 3' | bash; echo $?",
+    "printf '%s\\n' 'echo \"tool $1\"' > tool.sh; bash ./tool.sh arg",
+    "printf '%s\\n' 'while true; do echo line; done' > f.sh; bash f.sh | head -n 2",
+    "printf '%s\\n' 'cat | head -n 1' > u.sh; printf 'abc\ndef\n' | bash u.sh",
+    "printf '%s\\n' 'echo said' > say.sh; bash say.sh > out.txt; cat out.txt; echo \"got $(bash say.sh)\"",
+    "printf '%s\\n' 'echo $1' 'echo $#' > a.sh; source a.sh x y; f() { source a.sh; }; f p q r",
+    "bash missing.sh 2>/dev/null; echo $?; source missing.sh 2>/dev/null; echo $?",
 ]
 
 

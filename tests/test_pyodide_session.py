@@ -50,6 +50,7 @@ class FakeHost:
     directories: list[str] = field(default_factory=list)
     attached: list[bool] = field(default_factory=list)
     piped_inputs: list[str | None] = field(default_factory=list)
+    process_directories: list[Path] = field(default_factory=list)
     output: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -57,6 +58,7 @@ class FakeHost:
         self, name: str, arguments: list[str], cwd: str, attached: bool, piped_input: str | None
     ) -> FakeHostCallHandle:
         self.piped_inputs.append(piped_input)
+        self.process_directories.append(Path.cwd())
         self.calls.append((name, arguments))
         self.directories.append(cwd)
         self.attached.append(attached)
@@ -76,6 +78,12 @@ def build_session(home: Path, host: FakeHost) -> PyodideSession:
 
 def run(session: PyodideSession, script: str) -> dict:
     return json.loads(asyncio.run(session.run(script)))
+
+
+@pytest.fixture(autouse=True)
+def restore_process_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start each test in its own directory and put the process back afterwards, since a session moves it"""
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture
@@ -253,17 +261,64 @@ def test_state_persists_between_runs(tmp_path: Path, host: FakeHost) -> None:
     assert "".join(host.output) == "hello\n"
 
 
-def test_cd_moves_the_process_working_directory_with_the_shell(
+def test_host_command_runs_with_the_process_in_the_shells_directory(
     tmp_path: Path, host: FakeHost, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Check that Python run by the host afterwards sees the directory the shell changed to"""
+    """Check that code the host runs in this interpreter sees the directory the shell is in"""
     (tmp_path / "notes").mkdir()
     monkeypatch.chdir(tmp_path)
     session = build_session(tmp_path, host)
 
-    run(session, "cd notes")
+    run(session, "cd notes; fetchy")
 
-    assert Path.cwd() == (tmp_path / "notes").resolve()
+    assert host.process_directories == [(tmp_path / "notes").resolve()]
+
+
+def test_process_returns_home_once_the_host_command_is_over(
+    tmp_path: Path, host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that the process does not stay inside a directory the shell may go on to remove"""
+    (tmp_path / "notes").mkdir()
+    monkeypatch.chdir(tmp_path)
+    session = build_session(tmp_path, host)
+
+    result = run(session, "cd notes; fetchy; cd ..; rm -r notes")
+
+    assert (result["exit_code"], (tmp_path / "notes").exists()) == (0, False)
+    assert Path.cwd() == tmp_path.resolve()
+
+
+def test_cd_inside_a_subshell_does_not_move_later_host_commands(
+    tmp_path: Path, host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check that a directory change confined to a subshell is not what the next host command runs in"""
+    (tmp_path / "notes").mkdir()
+    monkeypatch.chdir(tmp_path)
+    session = build_session(tmp_path, host)
+
+    run(session, "(cd notes; true); fetchy")
+
+    assert host.process_directories == [tmp_path.resolve()]
+
+
+def test_run_reports_only_exported_variables_as_the_environment(tmp_path: Path, host: FakeHost) -> None:
+    """Check that a plain assignment stays in the session while an export is reported for the next one"""
+    session = build_session(tmp_path, host)
+
+    result = run(session, "local_only=1; export SHARED=yes; later=2; export later")
+
+    assert result["environment"]["SHARED"] == "yes"
+    assert result["environment"]["later"] == "2"
+    assert "local_only" not in result["environment"]
+
+
+def test_unset_removes_a_variable_from_the_reported_environment(tmp_path: Path, host: FakeHost) -> None:
+    """Check that an exported variable is no longer reported once it is unset"""
+    session = build_session(tmp_path, host)
+
+    result = run(session, "export GONE=1; unset GONE")
+
+    assert "GONE" not in result["environment"]
 
 
 def test_a_failure_inside_a_command_is_reported_and_the_state_still_returned(tmp_path: Path, host: FakeHost) -> None:

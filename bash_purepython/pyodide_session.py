@@ -11,11 +11,10 @@ from typing import Any, ClassVar, Protocol
 # Project libraries
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
 from bash_purepython.command.registry import CommandRegistry
-from bash_purepython.execute_command import Executor
+from bash_purepython.execute_command import SCRIPT_COMMAND_NAMES, Executor
 from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, ShellState
 
 EXIT_CODE_INTERRUPTED = 130
-CD_BUILTIN_NAME = "cd"
 HOST_OUTPUT_KIND_STDOUT = "stdout"
 HOST_OUTPUT_KIND_STDERR = "stderr"
 REPL_STATUS_DONE = "done"
@@ -60,7 +59,7 @@ class HostCommand(Command):
     input_kinds: ClassVar[frozenset[InputKind]] = frozenset({InputKind.ARGUMENTS, InputKind.TEXT})
     output_kinds: ClassVar[frozenset[OutputKind]] = frozenset({OutputKind.STREAM_TEXT})
 
-    def __init__(self, name: str, start_host_call: HostCallStarter):
+    def __init__(self, name: str, start_host_call: HostCallStarter, resting_directory: Path):
         """Bind one host command name to the callback that starts it
 
         Args:
@@ -68,9 +67,11 @@ class HostCommand(Command):
             start_host_call: Takes the name, arguments, current directory, whether the command is
                 attached to the terminal, and the standard input piped or redirected into it or None,
                 and returns a handle on the running command
+            resting_directory: The directory the process returns to once the command has finished
         """
         self.name = name
         self.start_host_call = start_host_call
+        self.resting_directory = resting_directory
 
     def run(self, invocation: CommandInvocation) -> CommandResult:
         """Return a stream that relays the host command's output until it exits
@@ -80,7 +81,8 @@ class HostCommand(Command):
         the terminal: an attached command may write to the terminal itself as it runs, which is what lets a
         prompt appear before the command blocks reading a line, instead of relaying output through here.
         Input piped or redirected into the command is handed over whole; without any, the host reads the
-        terminal
+        terminal. The process itself is moved into the shell's directory for the length of the call, so
+        code the host runs in this interpreter resolves relative paths as the shell does
 
         Args:
             invocation: The arguments and shell state of this call
@@ -89,6 +91,7 @@ class HostCommand(Command):
             A lazy stream of the command's standard output
         """
         piped_input = invocation.stdin if invocation.stdin_kind == InputKind.TEXT else None
+        enter_directory(invocation.state.cwd)
         handle = self.start_host_call(
             self.name,
             list(invocation.arguments),
@@ -96,15 +99,30 @@ class HostCommand(Command):
             invocation.attached_to_terminal,
             piped_input,
         )
-        return CommandResult(stdout=relay_host_output(handle, invocation), exit_code=EXIT_CODE_SUCCESS)
+        return CommandResult(
+            stdout=relay_host_output(handle, invocation, self.resting_directory), exit_code=EXIT_CODE_SUCCESS
+        )
 
 
-async def relay_host_output(handle: HostCallHandle, invocation: CommandInvocation) -> AsyncIterator[str]:
+def enter_directory(directory: Path) -> None:
+    """Move the process into a directory, staying put when it no longer exists
+
+    Args:
+        directory: The directory to change to
+    """
+    if directory.is_dir():
+        os.chdir(directory)
+
+
+async def relay_host_output(
+    handle: HostCallHandle, invocation: CommandInvocation, resting_directory: Path
+) -> AsyncIterator[str]:
     """Yield the host command's standard output, forward its errors, then record its exit code
 
     Args:
         handle: The running command, iterated for its output pieces
         invocation: The call whose exit status receives the exit code
+        resting_directory: The directory the process returns to when the command is over
 
     Yields:
         Each chunk written to standard output
@@ -117,6 +135,7 @@ async def relay_host_output(handle: HostCallHandle, invocation: CommandInvocatio
                 yield piece.text
     finally:
         handle.cancel()
+        enter_directory(resting_directory)
     invocation.exit_status.code = int(handle.exit_code())
 
 
@@ -144,37 +163,22 @@ class PyodideSession:
         """
         self.registry = CommandRegistry()
         for name in host_command_names:
-            self.registry.register(HostCommand(name, start_host_call))
+            self.registry.register(HostCommand(name, start_host_call, Path(home)))
         self.executor = Executor(self.registry)
-        self.executor.builtins[CD_BUILTIN_NAME] = self.change_directory
+        self.home = Path(home)
         self.state = ShellState(
             cwd=Path(home), write_output=write_output, write_error=write_error, variables=dict(environment)
         )
         self.state.variables.setdefault(HOME_VARIABLE, home)
         self.state.variables.setdefault(PWD_VARIABLE, home)
+        self.state.exported_names.update(self.state.variables)
         self.console: Any = None
         self.write_output = write_output
         self.write_error = write_error
 
     def command_names(self) -> list[str]:
         """Return every command and builtin the shell knows, sorted"""
-        return sorted(set(self.registry.names()) | set(self.executor.builtins))
-
-    async def change_directory(self, arguments: list[str], stdin: Any, state: ShellState) -> int:
-        """Run the engine's cd, then move the process to the same directory so host-run Python follows the shell
-
-        Args:
-            arguments: The arguments given to cd
-            stdin: Ignored
-            state: The shell state whose directory changes
-
-        Returns:
-            The exit code of cd
-        """
-        exit_code = await Executor.builtin_cd(self.executor, arguments, stdin, state)
-        if exit_code == EXIT_CODE_SUCCESS and state.cwd.is_dir():
-            os.chdir(state.cwd)
-        return exit_code
+        return sorted(set(self.registry.names()) | set(self.executor.builtins) | SCRIPT_COMMAND_NAMES)
 
     async def run(self, script: str) -> str:
         """Run a script and return the exit code, directory and variables as JSON
@@ -186,8 +190,10 @@ class PyodideSession:
             script: The script text
 
         Returns:
-            A JSON object with ``exit_code``, ``cwd`` and ``environment``
+            A JSON object with ``exit_code``, ``cwd`` and ``environment``, the last holding only the
+            exported variables, which is what a later session should start from
         """
+        enter_directory(self.home)
         try:
             exit_code = await self.executor.execute_script(script, self.state)
         except KeyboardInterrupt:
@@ -198,13 +204,14 @@ class PyodideSession:
             exit_code = EXIT_CODE_FAILURE
             self.state.last_exit_code = exit_code
         return json.dumps(
-            {"exit_code": exit_code, "cwd": str(self.state.cwd), "environment": dict(self.state.variables)}
+            {"exit_code": exit_code, "cwd": str(self.state.cwd), "environment": self.state.exported_variables()}
         )
 
     def repl_start(self) -> str:
         """Open a fresh Python console and return its banner"""
         from pyodide.console import BANNER, PyodideConsole
 
+        enter_directory(self.state.cwd)
         self.console = PyodideConsole(
             stdout_callback=self.write_output, stderr_callback=self.write_error, filename=CONSOLE_FILENAME
         )

@@ -37,8 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exist, so clusters such as `-lah`, `-ltr` and `-lsa` parse. Named files are listed before named
   directories, and names come one per line when the output is not the terminal
 
+- Script files: `bash` and `sh` run a file, the text after `-c`, or a script from standard input against
+  a copy of the state with its own positional arguments; a command name holding a slash runs that file
+  the same way; `source` and `.` run a file against the live state and honour `return`. A script's
+  output pipes, redirects and captures like any command's, and a missing file exits 127, or 1 when
+  sourced
+- `ShellState.exported_names` records what `export` marked, `unset` clears it, and
+  `exported_variables()` returns what a new process would inherit
+- `examples/terminal.py`, an interactive terminal on the engine showing what a host supplies
+
 ### Changed
 
+- `PyodideSession.run` reports only exported variables as the environment, not every shell variable
+- `PyodideSession` moves the process into the shell's directory for the length of a host command and
+  back afterwards, instead of following every `cd`, so a `cd` inside a subshell no longer leaks
 - `ls -r` reverses the order, as in GNU ls; recursion is `-R` only
 - `CommandInvocation.attached_to_terminal` tells a command that nothing stands between it and the
   terminal: no pipe, capture or redirection on either output stream. A host command is told the same,

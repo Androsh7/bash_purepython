@@ -52,7 +52,9 @@ redirections on commands and on compound commands (`>`, `>>`, `<`, `2>`, `2>>`,
 substitution, arithmetic (`$(( ))` and the `(( ))` command), the `[[ ]]`
 conditional command, pathname expansion
 (`*`, `?`, `[...]`), and the builtins `cd`, `export`, `unset`, `exit`, `return`,
-`break`, `continue`, `wait`, `jobs`.
+`break`, `continue`, `wait`, `jobs`. Script files run with `bash file`, `sh file`,
+`bash -c text`, a script on standard input, or by a path such as `./file`, each
+against a copy of the state; `source file` and `. file` run one against the live state.
 Commands shipped: `[`, `basename`, `cat`, `cp`, `cut`, `date`, `dirname`, `echo`,
 `env`, `false`, `find`, `grep`, `gunzip`, `gzip`, `head`, `help`, `kill`, `ls`,
 `mkdir`, `mv`, `nl`, `printf`, `ps`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`,
@@ -62,6 +64,19 @@ for the commands that use it, such as `ls -h` and `grep -h`.
 Known limitations: `case`, `select` and process substitution are not
 implemented; a `$( )` substitution that never stops
 writing is cut off at the executor's output limit.
+
+## Example terminal
+
+`examples/terminal.py` is a small interactive terminal built on the engine, showing what a host
+supplies: one `ShellState` for the session, one `ShellRunner` so background jobs survive between
+lines, a prompt, and a continuation prompt while a quote or here-document is open. Run it with:
+
+```bash
+uv run python -m examples.terminal
+```
+
+For a browser host, `bash_purepython.pyodide_session.PyodideSession` plays the same role under
+Pyodide and adds commands the page implements itself.
 
 ## Testing
 

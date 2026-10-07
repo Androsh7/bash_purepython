@@ -356,6 +356,7 @@ class ShellState:
     write_error: Callable[[str], None]
     variables: dict[str, str] = field(default_factory=dict)
     functions: dict[str, str] = field(default_factory=dict)
+    exported_names: set[str] = field(default_factory=set)
     positional_arguments: list[str] = field(default_factory=list)
     last_exit_code: int = EXIT_CODE_SUCCESS
     pending_stdin: Any = None
@@ -406,6 +407,7 @@ class ShellState:
             write_error=self.write_error,
             variables=dict(self.variables),
             functions=dict(self.functions),
+            exported_names=set(self.exported_names),
             positional_arguments=list(self.positional_arguments),
             last_exit_code=self.last_exit_code,
             loop_depth=self.loop_depth,
@@ -418,6 +420,10 @@ class ShellState:
         copied.terminal_output_sink = self.terminal_output_sink
         copied.terminal_write_error = self.terminal_write_error
         return copied
+
+    def exported_variables(self) -> dict[str, str]:
+        """Return the variables marked for export that are set, which is what a new process would inherit"""
+        return {name: self.variables[name] for name in sorted(self.exported_names) if name in self.variables}
 
     def is_attached_to_terminal(self) -> bool:
         """Return whether both sinks still point at the terminal rather than a pipe, capture or file"""

@@ -85,6 +85,12 @@ PREVIOUS_DIRECTORY_VARIABLE_NAME = "OLDPWD"
 CURRENT_DIRECTORY_VARIABLE_NAME = "PWD"
 HOME_VARIABLE_NAME = "HOME"
 NO_OP_BUILTIN_NAME = ":"
+SHELL_COMMAND_NAMES = frozenset({"bash", "sh"})
+SOURCE_COMMAND_NAMES = frozenset({"source", "."})
+SCRIPT_COMMAND_NAMES = SHELL_COMMAND_NAMES | SOURCE_COMMAND_NAMES
+INLINE_SCRIPT_OPTION = "-c"
+PATH_SEPARATOR = "/"
+EXIT_CODE_NOT_EXECUTABLE = 126
 DEFAULT_OUTPUT_LIMIT_CHARACTERS = 16 << 20
 OUTPUT_REDIRECTION_KINDS = frozenset(
     {RedirectionKind.WRITE_STDOUT, RedirectionKind.APPEND_STDOUT, RedirectionKind.WRITE_BOTH}
@@ -904,6 +910,9 @@ class Executor:
         if name in state.functions:
             return await self.call_function(name, arguments, stdin, error_destination, state, in_pipeline)
         builtin = self.builtins.get(name)
+        names_a_path = PATH_SEPARATOR in name and builtin is None and self.registry.get(name) is None
+        if name in SCRIPT_COMMAND_NAMES or names_a_path:
+            return await self.run_script_command(name, arguments, stdin, error_destination, state, in_pipeline)
         if builtin is not None:
             write_error = self.error_sink(error_destination, state, state.output_sink.write_sync)
             with redirected_sinks(state, write_error=write_error):
@@ -921,6 +930,126 @@ class Executor:
         return await self.run_registered_command(
             command, arguments, stdin, error_destination, state, attached_to_terminal
         )
+
+    async def run_script_command(
+        self,
+        name: str,
+        arguments: list[str],
+        stdin: StdinValue | None,
+        error_destination: "ErrorDestination | Path",
+        state: ShellState,
+        in_pipeline: bool = False,
+    ) -> ExecutionResult:
+        """Run a script named by ``bash``, ``sh``, ``source``, ``.`` or by its own path
+
+        ``bash`` and ``sh`` run the script against a copy of the state, taking it from a file, from the text
+        after ``-c``, or from standard input when no file is named. ``source`` and ``.`` run a file against the
+        live state. A command name holding a slash runs that file as ``bash`` would
+
+        Args:
+            name: The command name, or the path of a script
+            arguments: The words after it
+            stdin: Standard input, which is the script when ``bash`` names none, otherwise the script's own input
+            error_destination: Where error output goes
+            state: The shell state to run against
+            in_pipeline: Whether the command is a pipeline stage, so its output streams from its own task
+
+        Returns:
+            The script's output and exit code; a missing file gives 127, or 1 when sourced, and a directory 126
+        """
+        write_error = self.error_sink(error_destination, state, state.output_sink.write_sync)
+        stdin = self.take_pending_stdin(stdin, state)
+        is_shell = name in SHELL_COMMAND_NAMES
+        is_sourced = name in SOURCE_COMMAND_NAMES
+        script_text: str | None = None
+        path_text = name
+        positional = arguments
+        if is_shell and arguments[:1] == [INLINE_SCRIPT_OPTION]:
+            if len(arguments) == 1:
+                write_error(f"bash: {INLINE_SCRIPT_OPTION}: option requires an argument\n")
+                return await self.fail_script_command(stdin, EXIT_CODE_USAGE_ERROR)
+            script_text, positional = arguments[1], arguments[3:]
+        elif is_shell and not arguments:
+            script_text = "" if stdin is None else await materialise_text(stdin.value, stdin.kind)
+            stdin, positional = None, []
+        elif is_shell and arguments[0].startswith("-"):
+            write_error(f"bash: {arguments[0]}: invalid option\n")
+            return await self.fail_script_command(stdin, EXIT_CODE_USAGE_ERROR)
+        elif is_sourced and not arguments:
+            write_error(f"bash: {name}: filename argument required\n")
+            return await self.fail_script_command(stdin, EXIT_CODE_USAGE_ERROR)
+        elif is_shell or is_sourced:
+            path_text, positional = arguments[0], arguments[1:]
+        if script_text is None:
+            path = state.resolve_path(path_text)
+            if not path.is_file():
+                reason = "Is a directory" if path.is_dir() else "No such file or directory"
+                write_error(f"bash: {path_text}: {reason}\n")
+                exit_code = EXIT_CODE_COMMAND_NOT_FOUND
+                if is_sourced:
+                    exit_code = EXIT_CODE_FAILURE
+                elif path.is_dir():
+                    exit_code = EXIT_CODE_NOT_EXECUTABLE
+                return await self.fail_script_command(stdin, exit_code)
+            try:
+                script_text = path.read_text(encoding=TEXT_ENCODING)
+            except (OSError, UnicodeDecodeError) as error:
+                write_error(f"bash: {path_text}: {error}\n")
+                return await self.fail_script_command(stdin, EXIT_CODE_NOT_EXECUTABLE)
+        body_text = script_text
+
+        async def run_sourced(inner_state: ShellState) -> int:
+            try:
+                return await self.run_script(body_text, inner_state)
+            except ReturnFromFunction as returned:
+                return returned.exit_code
+
+        async def run_separately(inner_state: ShellState) -> int:
+            return await self.run_subshell_script(body_text, inner_state)
+
+        if is_sourced and not in_pipeline:
+            saved_positional = state.positional_arguments
+            if positional:
+                state.positional_arguments = positional
+            state.function_depth += 1
+            try:
+                return await self.execute_compound(
+                    run_sourced, state, stdin, [], False, error_destination=error_destination
+                )
+            finally:
+                state.positional_arguments = saved_positional
+                state.function_depth -= 1
+        script_state = state.copy()
+        if is_sourced:
+            script_state.function_depth += 1
+            if positional:
+                script_state.positional_arguments = positional
+        else:
+            script_state.positional_arguments = positional
+            script_state.loop_depth = 0
+            script_state.function_depth = 0
+        run_body = run_sourced if is_sourced else run_separately
+        if in_pipeline:
+            return await self.stream_compound(
+                run_body, script_state, stdin, [], merge_stderr=False, error_destination=error_destination
+            )
+        return await self.execute_compound(
+            run_body, script_state, stdin, [], False, error_destination=error_destination
+        )
+
+    async def fail_script_command(self, stdin: StdinValue | None, exit_code: int) -> ExecutionResult:
+        """Return a failed result for a script that could not start, stopping whatever was piped into it
+
+        Args:
+            stdin: Standard input nobody will read, or None
+            exit_code: The exit code to report
+
+        Returns:
+            An empty result with the exit code
+        """
+        if stdin is not None:
+            await self.discard_stdin(stdin)
+        return ExecutionResult.empty(exit_code)
 
     async def call_function(
         self,
@@ -1233,10 +1362,10 @@ class Executor:
         return EXIT_CODE_SUCCESS
 
     async def builtin_export(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
-        """Set variables from ``name=value`` arguments
+        """Mark variables for export, setting those given as ``name=value``
 
         Args:
-            arguments: The assignments, or bare names which are left as they are
+            arguments: The assignments, or bare names which keep their value
             stdin: Ignored
             state: The shell state whose variables change
 
@@ -1247,6 +1376,7 @@ class Executor:
             name, separator, value = argument.partition("=")
             if separator:
                 state.variables[name] = value
+            state.exported_names.add(name)
         return EXIT_CODE_SUCCESS
 
     async def builtin_unset(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
@@ -1265,6 +1395,7 @@ class Executor:
                 continue
             state.variables.pop(name, None)
             state.functions.pop(name, None)
+            state.exported_names.discard(name)
         return EXIT_CODE_SUCCESS
 
     async def builtin_exit(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
