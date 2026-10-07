@@ -10,6 +10,9 @@ COMPOUND_CLOSING_KEYWORDS = frozenset({"fi", "done", "esac"})
 KEYWORDS_FOLLOWED_BY_A_COMMAND = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "time"})
 WORD_BREAK_CHARACTERS = frozenset(" \t\n;&|()<>{}'\"\\`$")
 WHITESPACE_CHARACTERS = frozenset(" \t")
+CONDITIONAL_OPENING = "[["
+CONDITIONAL_CLOSING = "]]"
+CONDITIONAL_SPACING = frozenset(" \t\n")
 REDIRECTION_CHARACTERS = frozenset("<>|")
 HEREDOC_OPERATOR_PATTERN = re.compile(r"<<(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|(\\?[^\s;&|()<>'\"]+))")
 
@@ -337,6 +340,8 @@ class ScriptSplitter:
         while self.position < len(self.script) and self.script[self.position] not in WORD_BREAK_CHARACTERS:
             self.position += 1
         word = self.script[word_start : self.position]
+        if word == CONDITIONAL_OPENING and self.at_command_start and self.at_word_start:
+            self._consume_conditional()
         if not self.nesting:
             if self.top_level_word_count == 0:
                 self.first_word = word
@@ -358,6 +363,34 @@ class ScriptSplitter:
         else:
             self.at_command_start = False
         self.at_word_start = False
+
+    def _consume_conditional(self) -> None:
+        """Skip to the end of a ``[[ ]]`` command
+
+        Inside it ``&&``, ``||``, ``<``, ``>`` and parentheses belong to the expression rather than to the shell
+        """
+        while self.position < len(self.script):
+            character = self.script[self.position]
+            if character == "\\":
+                self.position += 2
+            elif character == "'":
+                self._consume_single_quoted()
+            elif character == '"':
+                self._consume_double_quoted()
+            elif character == "`":
+                self._consume_backticks()
+            elif (
+                self.script.startswith(CONDITIONAL_CLOSING, self.position)
+                and self.script[self.position - 1] in CONDITIONAL_SPACING
+                and (
+                    self.position + len(CONDITIONAL_CLOSING) >= len(self.script)
+                    or self.script[self.position + len(CONDITIONAL_CLOSING)] in WORD_BREAK_CHARACTERS
+                )
+            ):
+                self.position += len(CONDITIONAL_CLOSING)
+                return
+            else:
+                self.position += 1
 
     def _consume_separator(self, character: str) -> None:
         """Consume a newline, semicolon, ampersand, or pipe and end the command when appropriate

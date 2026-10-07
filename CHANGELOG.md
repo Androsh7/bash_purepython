@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `test` and `[`: string and integer comparisons, `-z`/`-n`, the file tests `-e -f -d -L -h -s -r -w -x`,
   `-nt`/`-ot`/`-ef`, and `!`, `-a`, `-o` and parentheses, exiting two on a malformed expression
 - `grep -q` (`--quiet`, `--silent`) prints nothing and stops at the first match
+- `[[ expression ]]`: operands are not word-split or expanded into file names, the right side of `==`
+  and `!=` is a pattern and of `=~` a regular expression with quoted parts literal, numeric operators
+  evaluate arithmetic, and `&&`, `||`, `!`, `<`, `>` and parentheses belong to the expression, with
+  the undecided side of `&&` and `||` left unexpanded
+- `ls` prints what GNU ls does: `-l` gives a `total` line and mode, links, owner, group, size, time and
+  name for each entry, `-a` includes `.` and `..`, and `-A`, `-r`, `-t`, `-S`, `-1`, `-d`, `-s` and `-F`
+  exist, so clusters such as `-lah`, `-ltr` and `-lsa` parse. Named files are listed before named
+  directories, and names come one per line when the output is not the terminal
+
+### Changed
+
+- `ls -r` reverses the order, as in GNU ls; recursion is `-R` only
 - `CommandInvocation.attached_to_terminal` tells a command that nothing stands between it and the
   terminal: no pipe, capture or redirection on either output stream. A host command is told the same,
   so it may write to the terminal as it runs, which is what lets a prompt show before it blocks on input

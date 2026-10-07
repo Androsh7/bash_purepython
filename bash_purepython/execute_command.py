@@ -17,6 +17,7 @@ from bash_purepython.arithmetic import evaluate_arithmetic
 from bash_purepython.block_parser import build_plan
 from bash_purepython.command.command import Command, CommandInvocation, ExitStatus, InputKind, OutputKind
 from bash_purepython.command.registry import CommandRegistry
+from bash_purepython.conditional import conditional_body, evaluate_conditional
 from bash_purepython.parse_script import split_script_into_connected_commands
 from bash_purepython.shell_state import (
     EXIT_CODE_BROKEN_PIPE,
@@ -822,6 +823,12 @@ class Executor:
             The command's output and exit code
         """
         run_substitution = self.substitution_runner(state)
+        condition = conditional_body(node.text)
+        if condition is not None:
+            if stdin is not None:
+                await self.discard_stdin(stdin)
+            truth = await evaluate_conditional(condition, state, run_substitution)
+            return ExecutionResult.empty(EXIT_CODE_SUCCESS if truth else EXIT_CODE_FAILURE)
         words, redirections, assignments = tokenize_simple_command(node.text)
         arguments = await expand_words(words, state, run_substitution)
         if not arguments:
