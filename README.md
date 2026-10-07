@@ -4,30 +4,87 @@ PurePython implementations of common bash commands, for use with pyodide.
 
 These are mostly vibe coded, use at your own risk.
 
-## Embedding the shell
+## Running scripts
 
-`bash_purepython.shell` runs these commands behind a bash-like line syntax
-without a subprocess, which is what the browser terminal on androsh7.com uses
-under Pyodide.
+`bash_purepython.execute_command` runs bash-like scripts on asyncio, with no
+subprocesses or threads, which is what pyodide needs. A script is split into
+top-level blocks, each block is turned into a plan, the plan is executed, and
+any script text found along the way (loop bodies, function bodies, `$( )`
+substitutions, subshells) re-enters the same loop.
+
+Under pyodide, where an event loop is already running, await the entry point
+(for example from `runPythonAsync` with top-level `await`):
 
 ```python
-from bash_purepython.shell.models import HostCommand
-from bash_purepython.shell.session import ShellSession
+from bash_purepython.execute_command import run_script_async
+from bash_purepython.shell_state import ShellState
 
-session = ShellSession(home="/home/user", host_commands=[HostCommand("vim", "open a file")], environment={})
-result = session.run_line("echo hello | tr a-z A-Z > out.txt && cat out.txt")
-print(result.stdout, result.exit_code, result.cwd)
-completion = session.complete("gre", cursor=3)
-print(completion.replacement)
+state = ShellState.for_terminal()
+exit_code = await run_script_async("yes | head -n 3; echo $(echo sub) | cat", state)
+print(state.stdout, state.stderr, exit_code)
 ```
 
-Pass `output_sink=` a callable taking `(kind, text)` to receive stdout and stderr
-as they are written instead of in the result. Pipelines run one stage at a
-time, so only the last stage streams; everything before it is buffered up to
-`OUTPUT_LIMIT_BYTES`.
+On CPython, `run_script(script, state)` drives its own loop, and `ShellRunner`
+keeps one loop alive across calls so background jobs survive between them.
 
-Commands the embedding host runs itself (an editor, a network fetch, a file
-upload) are declared as `HostCommand`s. The session reports them back as a
-`host_call` instead of running them, and refuses them inside a pipeline.
-`bash_purepython.shell.bridge` wraps the same calls in JSON strings for hosts
-that cannot pass Python objects.
+Pipelines stream lazily: a command declares the kinds of input and output it
+supports (`Iterator[str]`, `str`, `Iterator[bytes]`, `bytes`, synchronous or
+asynchronous) and the engine negotiates a shared kind between neighbouring
+stages, so `yes | head` runs `yes` only as far as `head` reads. A group, loop,
+conditional or function used as a pipeline stage runs as its own task and
+streams through a bounded queue, so `( yes ) | head -n 2` terminates too.
+Standard output and standard error are written to the state's sinks as each
+chunk is produced and are also recorded on the state. A sink may be an async
+callable, such as a JavaScript function, and is awaited per chunk.
+
+`cmd &` starts a background job on the event loop. `$!` holds its pid, the
+fake `ps` lists the job table (`R` running, `D` done, `K` killed), `kill PID`
+cancels a job, `wait [PID]` waits and reaps, and `jobs` lists them bash-style.
+
+Register extra commands by subclassing `bash_purepython.command.command.Command`
+and adding an instance to a `CommandRegistry`. A command's `run` may be a plain
+function or a coroutine, so it can await a browser promise such as `fetch`.
+
+Supported so far: pipelines (`|`, `|&`, `!`), `&&`/`||` lists, `if`/`elif`/`else`,
+`for`, `while`, `until`, functions, subshells, brace groups, background jobs,
+redirections on commands and on compound commands (`>`, `>>`, `<`, `2>`, `2>>`,
+`2>&1`, `&>`, heredocs, here-strings, `/dev/null`), parameter and command
+substitution, arithmetic (`$(( ))` and the `(( ))` command), the `[[ ]]`
+conditional command, pathname expansion
+(`*`, `?`, `[...]`), and the builtins `cd`, `export`, `unset`, `exit`, `return`,
+`break`, `continue`, `wait`, `jobs`. Script files run with `bash file`, `sh file`,
+`bash -c text`, a script on standard input, or by a path such as `./file`, each
+against a copy of the state; `source file` and `. file` run one against the live state.
+Commands shipped: `[`, `basename`, `cat`, `cp`, `cut`, `date`, `dirname`, `echo`,
+`env`, `false`, `find`, `grep`, `gunzip`, `gzip`, `head`, `help`, `kill`, `ls`,
+`mkdir`, `mv`, `nl`, `printf`, `ps`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`,
+`seq`, `sleep`, `test`, `true`, `yes`. Every command takes `--help`; `-h` is left free
+for the commands that use it, such as `ls -h` and `grep -h`.
+
+Known limitations: `case`, `select` and process substitution are not
+implemented; a `$( )` substitution that never stops
+writing is cut off at the executor's output limit.
+
+## Example terminal
+
+`examples/terminal.py` is a small interactive terminal built on the engine, showing what a host
+supplies: one `ShellState` for the session, one `ShellRunner` so background jobs survive between
+lines, a prompt, and a continuation prompt while a quote or here-document is open. Run it with:
+
+```bash
+uv run python -m examples.terminal
+```
+
+For a browser host, `bash_purepython.pyodide_session.PyodideSession` plays the same role under
+Pyodide and adds commands the page implements itself.
+
+## Testing
+
+`uv run pytest` runs the in-memory suite. `tests/test_live_bash.py` runs the
+same several hundred scripts through a real `bash` binary and the engine and
+compares standard output and exit codes; it is marked `live_bash_test` and
+excluded by default. Run it with:
+
+```bash
+uv run pytest -m live_bash_test
+```

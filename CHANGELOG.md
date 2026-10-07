@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0
+
+### Added
+
+- `bash_purepython.execute_command`, an asyncio execution engine for bash-like scripts: lazily streaming
+  pipelines, `&&`/`||` lists, `if`/`for`/`while`/`until`, functions, subshells, brace groups, background jobs
+  (`&`, `$!`, `ps`, `kill`, `wait`, `jobs`), redirections, heredocs, parameter and command substitution
+- `bash_purepython.pyodide_session`, the host-facing session for a browser terminal: `PyodideSession` keeps one
+  shell state and executor across calls, `run` returns the exit code, directory and variables as JSON,
+  `HostCommand` relays a command the host implements through the pipeline so it can be piped and redirected,
+  and the Python REPL is Pyodide's own console (`repl_start`, `repl_feed`, `repl_complete`)
+- The coreutils ported onto the `Command` interface: `basename`, `cp`, `cut`, `date`, `dirname`, `env`, `find`,
+  `grep`, `gzip`, `gunzip`, `help`, `ls`, `mkdir`, `mv`, `nl`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`, `seq`
+- Pathname expansion: an unquoted `*`, `?` or `[...]` in a word is replaced by the paths it matches, in
+  sorted order, so `rm *` and `for f in *.txt` work. A pattern that matches nothing stays literal, hidden
+  files match only a pattern that names the leading dot, and quoting or escaping keeps a wildcard literal
+- Arithmetic: `$(( expression ))` expands to its value and `(( expression ))` is a command that succeeds
+  when the value is nonzero. Integers in decimal, octal, hexadecimal and `base#digits` form, variables
+  by bare name, every C operator bash has including `**`, `?:`, `,`, assignment and `++`/`--`, with
+  division truncating toward zero and the untaken side of `&&`, `||` and `?:` left unevaluated
+- `test` and `[`: string and integer comparisons, `-z`/`-n`, the file tests `-e -f -d -L -h -s -r -w -x`,
+  `-nt`/`-ot`/`-ef`, and `!`, `-a`, `-o` and parentheses, exiting two on a malformed expression
+- `grep -q` (`--quiet`, `--silent`) prints nothing and stops at the first match
+- `[[ expression ]]`: operands are not word-split or expanded into file names, the right side of `==`
+  and `!=` is a pattern and of `=~` a regular expression with quoted parts literal, numeric operators
+  evaluate arithmetic, and `&&`, `||`, `!`, `<`, `>` and parentheses belong to the expression, with
+  the undecided side of `&&` and `||` left unexpanded
+- `ls` prints what GNU ls does: `-l` gives a `total` line and mode, links, owner, group, size, time and
+  name for each entry, `-a` includes `.` and `..`, and `-A`, `-r`, `-t`, `-S`, `-1`, `-d`, `-s` and `-F`
+  exist, so clusters such as `-lah`, `-ltr` and `-lsa` parse. Named files are listed before named
+  directories, and names come one per line when the output is not the terminal
+
+- Script files: `bash` and `sh` run a file, the text after `-c`, or a script from standard input against
+  a copy of the state with its own positional arguments; a command name holding a slash runs that file
+  the same way; `source` and `.` run a file against the live state and honour `return`. A script's
+  output pipes, redirects and captures like any command's, and a missing file exits 127, or 1 when
+  sourced
+- `ShellState.exported_names` records what `export` marked, `unset` clears it, and
+  `exported_variables()` returns what a new process would inherit
+- `examples/terminal.py`, an interactive terminal on the engine showing what a host supplies
+
+### Changed
+
+- `PyodideSession.run` reports only exported variables as the environment, not every shell variable
+- `PyodideSession` moves the process into the shell's directory for the length of a host command and
+  back afterwards, instead of following every `cd`, so a `cd` inside a subshell no longer leaks
+- `ls -r` reverses the order, as in GNU ls; recursion is `-R` only
+- `CommandInvocation.attached_to_terminal` tells a command that nothing stands between it and the
+  terminal: no pipe, capture or redirection on either output stream. A host command is told the same,
+  so it may write to the terminal as it runs, which is what lets a prompt show before it blocks on input
+- A host command receives the input piped or redirected into it (`echo x | cmd`, `cmd < file`,
+  `cmd <<< text`) and the shell's current directory, and `PyodideSession.repl_discard` drops a block the
+  console is still waiting to see finished
+
+### Removed
+
+- The standalone coreutils scripts and `bash_purepython.shell` (tokenizer, parser, builtins, completion,
+  `ReplSession` and the JSON bridge); the engine and session above replace them. Shell completion and
+  multi-line continuation are now the host's job
+
 ## 0.3.0
 
 ### Added
