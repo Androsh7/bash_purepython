@@ -49,16 +49,17 @@ Supported so far: pipelines (`|`, `|&`, `!`), `&&`/`||` lists, `if`/`elif`/`else
 `for`, `while`, `until`, functions, subshells, brace groups, background jobs,
 redirections on commands and on compound commands (`>`, `>>`, `<`, `2>`, `2>>`,
 `2>&1`, `&>`, heredocs, here-strings, `/dev/null`), parameter and command
-substitution, pathname expansion (`*`, `?`, `[...]`), and the builtins `cd`, `export`, `unset`, `exit`, `return`,
+substitution, arithmetic (`$(( ))` and the `(( ))` command), pathname expansion
+(`*`, `?`, `[...]`), and the builtins `cd`, `export`, `unset`, `exit`, `return`,
 `break`, `continue`, `wait`, `jobs`.
-Commands shipped: `basename`, `cat`, `cp`, `cut`, `date`, `dirname`, `echo`,
+Commands shipped: `[`, `basename`, `cat`, `cp`, `cut`, `date`, `dirname`, `echo`,
 `env`, `false`, `find`, `grep`, `gunzip`, `gzip`, `head`, `help`, `kill`, `ls`,
 `mkdir`, `mv`, `nl`, `printf`, `ps`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`,
-`seq`, `sleep`, `true`, `yes`. Every command takes `--help`; `-h` is left free
+`seq`, `sleep`, `test`, `true`, `yes`. Every command takes `--help`; `-h` is left free
 for the commands that use it, such as `ls -h` and `grep -h`.
 
-Known limitations: `case`, `select`, arithmetic and process substitution are
-not implemented; a `$( )` substitution that never stops
+Known limitations: `case`, `select`, `[[ ]]` and process substitution are not
+implemented; a `$( )` substitution that never stops
 writing is cut off at the executor's output limit.
 
 ## Testing

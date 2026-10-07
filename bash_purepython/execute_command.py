@@ -11,6 +11,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from bash_purepython.arithmetic import evaluate_arithmetic
+
 # Project libraries
 from bash_purepython.block_parser import build_plan
 from bash_purepython.command.command import Command, CommandInvocation, ExitStatus, InputKind, OutputKind
@@ -453,6 +455,13 @@ class Executor:
             The body coroutine factory, the state to run it against, and the node's trailing redirections
         """
         if isinstance(node, SubshellNode):
+            expression = node.arithmetic_expression
+            if expression is not None:
+                return (
+                    (lambda inner: self.run_arithmetic_command(expression, inner)),
+                    state,
+                    node.redirections,
+                )
             body_text = node.body
             return (lambda inner: self.run_subshell_script(body_text, inner)), state.copy(), node.redirections
         if isinstance(node, BraceGroupNode):
@@ -465,6 +474,19 @@ class Executor:
         if isinstance(node, WhileNode | UntilNode):
             return (lambda inner: self.run_while(node, inner)), state, node.redirections
         raise ShellSyntaxError(f"unknown plan node: {node}")
+
+    async def run_arithmetic_command(self, expression: str, state: ShellState) -> int:
+        """Evaluate the expression of a ``(( ))`` command against the live state
+
+        Args:
+            expression: The text between the double parentheses
+            state: The shell state whose variables are read and assigned
+
+        Returns:
+            Zero when the value is nonzero, one when it is zero
+        """
+        expanded = await expand_text(expression, state, self.substitution_runner(state), in_double_quotes=False)
+        return EXIT_CODE_SUCCESS if evaluate_arithmetic(expanded, state) else EXIT_CODE_FAILURE
 
     async def execute_compound(
         self,

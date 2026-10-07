@@ -77,3 +77,24 @@ def test_grep_bad_pattern_exits_two(shell: ShellHarness, two_files: None) -> Non
     run = shell.run("grep '(' a.txt")
 
     assert run.exit_code == 2
+
+
+def test_grep_quiet_prints_nothing_and_exits_zero_on_a_match(shell: ShellHarness, two_files: None) -> None:
+    """Check that -q reports a match through the exit code alone"""
+    run = shell.run("grep -q apple a.txt")
+
+    assert (run.stdout, run.exit_code) == ("", 0)
+
+
+def test_grep_quiet_exits_one_without_a_match(shell: ShellHarness, two_files: None) -> None:
+    """Check that -q reports no match through the exit code alone"""
+    run = shell.run("grep -q zzzzzz a.txt")
+
+    assert (run.stdout, run.exit_code) == ("", 1)
+
+
+def test_grep_quiet_works_as_an_if_condition_on_piped_input(shell: ShellHarness) -> None:
+    """Check that -q reads a pipe and drives a conditional"""
+    run = shell.run("if echo needle | grep -q needle; then echo found; fi")
+
+    assert run.stdout == "found\n"

@@ -30,6 +30,7 @@ from bash_purepython.command.rm import RmCommand
 from bash_purepython.command.rmdir import RmdirCommand
 from bash_purepython.command.seq import SeqCommand
 from bash_purepython.command.sleep import SleepCommand
+from bash_purepython.command.test_command import BracketCommand, TestCommand
 from bash_purepython.command.true_command import TrueCommand
 from bash_purepython.command.yes import YesCommand
 
@@ -61,7 +62,9 @@ COMMAND_CLASSES: tuple[type[Command], ...] = (
     RmCommand,
     RmdirCommand,
     SeqCommand,
+    BracketCommand,
     SleepCommand,
+    TestCommand,
     TrueCommand,
     YesCommand,
 )

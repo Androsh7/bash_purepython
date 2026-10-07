@@ -69,10 +69,15 @@ class BackgroundNode:
 
 @dataclass(frozen=True)
 class SubshellNode:
-    """Hold a parenthesised script that runs against a copy of the state"""
+    """Hold a parenthesised script that runs against a copy of the state
+
+    Written as ``(( expression ))``, with nothing between each pair of parentheses, it is an arithmetic
+    command instead, and ``arithmetic_expression`` holds the text between them
+    """
 
     body: str
     redirections: list[Redirection] = field(default_factory=list)
+    arithmetic_expression: str | None = None
 
 
 @dataclass(frozen=True)

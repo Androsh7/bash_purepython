@@ -185,9 +185,18 @@ def test_expand_special_parameters() -> None:
         ('echo "$(date; uptime)"', ["echo", "<date;_uptime>"]),
         ("echo $(echo $(inner))", ["echo", "<echo_$(inner)>"]),
         ("echo pre$(date)post", ["echo", "pre<date>post"]),
-        ("echo $((1 + 2))", ["echo", "<(1_+_2)>"]),
+        ("echo $((1 + 2))", ["echo", "3"]),
+        ("echo $( (inner) )", ["echo", "<_(inner)_>"]),
     ],
-    ids=["dollar_paren", "backticks", "quoted_with_semicolon", "nested", "embedded", "arithmetic_passes_through"],
+    ids=[
+        "dollar_paren",
+        "backticks",
+        "quoted_with_semicolon",
+        "nested",
+        "embedded",
+        "arithmetic",
+        "subshell_in_substitution",
+    ],
 )
 def test_expand_runs_substitutions(text: str, expected: list[str]) -> None:
     """Check that command substitutions are handed to the runner with their inner text"""

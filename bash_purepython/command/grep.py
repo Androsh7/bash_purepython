@@ -77,6 +77,7 @@ async def grep_targets(
     line_numbers: bool,
     count_only: bool,
     files_only: bool,
+    quiet: bool,
 ) -> AsyncIterator[str]:
     """Yield the matching lines, counts or file names, and set the exit status to one when nothing matched
 
@@ -89,6 +90,7 @@ async def grep_targets(
         line_numbers: Whether each line is prefixed with its number
         count_only: Whether only the count per target is printed
         files_only: Whether only the names of matching targets are printed
+        quiet: Whether nothing is printed and the search stops at the first match
 
     Yields:
         Output lines with newlines
@@ -108,6 +110,8 @@ async def grep_targets(
                     continue
                 matches += 1
                 any_match = True
+                if quiet:
+                    return
                 if count_only or files_only:
                     continue
                 prefix = ([label] if show_filename else []) + ([str(line_number)] if line_numbers else [])
@@ -156,6 +160,9 @@ class GrepCommand(Command):
         parser.add_argument("-l", "--files-with-matches", action="store_true", help="print only matching file names")
         parser.add_argument("-H", "--with-filename", action="store_true", help="always print the file name")
         parser.add_argument("-h", "--no-filename", action="store_true", help="never print the file name")
+        parser.add_argument(
+            "-q", "--quiet", "--silent", action="store_true", help="print nothing, exit zero on a match"
+        )
         parser.add_argument("-e", "--regexp", dest="patterns", action="append", default=[], help="a pattern")
         parser.add_argument("pattern_and_paths", nargs="*", help="the pattern, then files to search")
         parsed = parse_command_arguments(parser, invocation.arguments, invocation.state)
@@ -188,5 +195,6 @@ class GrepCommand(Command):
             parsed.line_number,
             parsed.count,
             parsed.files_with_matches,
+            parsed.quiet,
         )
         return CommandResult(stdout=stream, exit_code=EXIT_CODE_SUCCESS)

@@ -244,6 +244,24 @@ def parse_trailing_redirections(text: str) -> list[Redirection]:
     return redirections
 
 
+def arithmetic_command_expression(inside: str) -> str | None:
+    """Return the expression of a ``(( ))`` command, given the text inside its outer parentheses
+
+    Args:
+        inside: Everything between the outer parentheses, whitespace included
+
+    Returns:
+        The text between the inner parentheses when they touch the outer ones, otherwise None
+    """
+    if not inside.startswith("(") or not inside.endswith(")"):
+        return None
+    try:
+        inner_close = find_group_close(inside)
+    except ShellSyntaxError:
+        return None
+    return inside[1:-1] if inner_close == len(inside) - 1 else None
+
+
 def parse_group(text: str, block_type: CommandBlockType) -> PlanNode:
     """Return the node for a subshell or brace group with its trailing redirections
 
@@ -255,10 +273,13 @@ def parse_group(text: str, block_type: CommandBlockType) -> PlanNode:
         A subshell or brace group node
     """
     close_index = find_group_close(text)
-    body = text[1:close_index].strip()
+    inside = text[1:close_index]
+    body = inside.strip()
     redirections = parse_trailing_redirections(text[close_index + 1 :])
     if block_type == CommandBlockType.SUBSHELL:
-        return SubshellNode(body=body, redirections=redirections)
+        return SubshellNode(
+            body=body, redirections=redirections, arithmetic_expression=arithmetic_command_expression(inside)
+        )
     return BraceGroupNode(body=body, redirections=redirections)
 
 

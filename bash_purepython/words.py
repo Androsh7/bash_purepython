@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 # Project libraries
+from bash_purepython.arithmetic import evaluate_arithmetic
 from bash_purepython.shell_state import ExpansionError, ShellState, ShellSyntaxError
 from bash_purepython.workflow import Redirection, RedirectionKind
 
@@ -22,6 +23,8 @@ HEREDOC_DELIMITER_PATTERN = re.compile(r"(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|(\\
 DOUBLE_QUOTE_ESCAPABLE_CHARACTERS = frozenset('$`"\\\n')
 ECHO_ESCAPE_SEQUENCES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "\\": "\\"}
 HOME_VARIABLE_NAME = "HOME"
+ARITHMETIC_OPENING = "$(("
+ARITHMETIC_CLOSING = "))"
 SHELL_NAME = "bash"
 POSITIONAL_FIELD_SEPARATOR = "\x1f"
 ALL_POSITIONAL_SPELLINGS = frozenset({"$@", "${@}"})
@@ -598,6 +601,29 @@ def find_balanced_end(text: str, start: int, opening: str, closing: str) -> int:
     raise ShellSyntaxError(f"unbalanced {opening}: {text}")
 
 
+def find_arithmetic_end(text: str, start: int) -> int | None:
+    """Return where an arithmetic expansion starting at a position ends, or None when it is not one
+
+    ``$((`` opens an arithmetic expansion only when the two opening parentheses are closed together by
+    ``))``; otherwise it is a command substitution whose command starts with a subshell
+
+    Args:
+        text: The text being expanded
+        start: The position of the dollar sign
+
+    Returns:
+        The position just past the closing ``))``, or None
+    """
+    if not text.startswith(ARITHMETIC_OPENING, start):
+        return None
+    try:
+        outer_end = find_balanced_end(text, start + 1, "(", ")")
+        inner_end = find_balanced_end(text, start + 2, "(", ")")
+    except ShellSyntaxError:
+        return None
+    return outer_end if inner_end == outer_end - 1 else None
+
+
 async def expand_text(
     text: str,
     state: ShellState,
@@ -631,6 +657,15 @@ async def expand_text(
                 raise ShellSyntaxError(f"unclosed backtick: {text}")
             pieces.append(await run_substitution(text[index + 1 : closing_index]))
             index = closing_index + 1
+        elif (arithmetic_end := find_arithmetic_end(text, index)) is not None:
+            expression = await expand_text(
+                text[index + len(ARITHMETIC_OPENING) : arithmetic_end - len(ARITHMETIC_CLOSING)],
+                state,
+                run_substitution,
+                in_double_quotes=False,
+            )
+            pieces.append(str(evaluate_arithmetic(expression, state)))
+            index = arithmetic_end
         elif text.startswith("$(", index):
             end = find_balanced_end(text, index + 1, "(", ")")
             pieces.append(await run_substitution(text[index + 2 : end - 1]))

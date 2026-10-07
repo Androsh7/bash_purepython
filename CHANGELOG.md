@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pathname expansion: an unquoted `*`, `?` or `[...]` in a word is replaced by the paths it matches, in
   sorted order, so `rm *` and `for f in *.txt` work. A pattern that matches nothing stays literal, hidden
   files match only a pattern that names the leading dot, and quoting or escaping keeps a wildcard literal
+- Arithmetic: `$(( expression ))` expands to its value and `(( expression ))` is a command that succeeds
+  when the value is nonzero. Integers in decimal, octal, hexadecimal and `base#digits` form, variables
+  by bare name, every C operator bash has including `**`, `?:`, `,`, assignment and `++`/`--`, with
+  division truncating toward zero and the untaken side of `&&`, `||` and `?:` left unevaluated
+- `test` and `[`: string and integer comparisons, `-z`/`-n`, the file tests `-e -f -d -L -h -s -r -w -x`,
+  `-nt`/`-ot`/`-ef`, and `!`, `-a`, `-o` and parentheses, exiting two on a malformed expression
+- `grep -q` (`--quiet`, `--silent`) prints nothing and stops at the first match
 - `CommandInvocation.attached_to_terminal` tells a command that nothing stands between it and the
   terminal: no pipe, capture or redirection on either output stream. A host command is told the same,
   so it may write to the terminal as it runs, which is what lets a prompt show before it blocks on input
