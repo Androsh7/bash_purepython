@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the Python REPL is Pyodide's own console (`repl_start`, `repl_feed`, `repl_complete`)
 - The coreutils ported onto the `Command` interface: `basename`, `cp`, `cut`, `date`, `dirname`, `env`, `find`,
   `grep`, `gzip`, `gunzip`, `help`, `ls`, `mkdir`, `mv`, `nl`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`, `seq`
+- Pathname expansion: an unquoted `*`, `?` or `[...]` in a word is replaced by the paths it matches, in
+  sorted order, so `rm *` and `for f in *.txt` work. A pattern that matches nothing stays literal, hidden
+  files match only a pattern that names the leading dot, and quoting or escaping keeps a wildcard literal
+- `CommandInvocation.attached_to_terminal` tells a command that nothing stands between it and the
+  terminal: no pipe, capture or redirection on either output stream. A host command is told the same,
+  so it may write to the terminal as it runs, which is what lets a prompt show before it blocks on input
+- A host command receives the input piped or redirected into it (`echo x | cmd`, `cmd < file`,
+  `cmd <<< text`) and the shell's current directory, and `PyodideSession.repl_discard` drops a block the
+  console is still waiting to see finished
 
 ### Removed
 

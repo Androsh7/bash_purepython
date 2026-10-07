@@ -47,7 +47,8 @@ class CommandInvocation:
     """Hold one call of a command with its input already in the negotiated kind
 
     Standard input in a streaming kind is an async iterator. A streaming command reports failure found while
-    producing output by setting ``exit_status.code``
+    producing output by setting ``exit_status.code``. ``attached_to_terminal`` is true when nothing stands
+    between the command and the terminal: no pipe, capture or redirection on either output stream
     """
 
     arguments: list[str]
@@ -56,6 +57,7 @@ class CommandInvocation:
     stdout_kind: OutputKind
     state: ShellState
     exit_status: ExitStatus = field(default_factory=ExitStatus)
+    attached_to_terminal: bool = False
 
 
 @dataclass(frozen=True)

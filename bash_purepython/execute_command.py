@@ -89,6 +89,11 @@ OUTPUT_REDIRECTION_KINDS = frozenset(
 JOB_STATUS_WORDS = {JobStatus.RUNNING: "Running", JobStatus.DONE: "Done", JobStatus.KILLED: "Killed"}
 
 
+OUTPUT_REDIRECTION_KINDS = frozenset(
+    {RedirectionKind.WRITE_STDOUT, RedirectionKind.APPEND_STDOUT, RedirectionKind.WRITE_BOTH}
+)
+
+
 class ErrorDestination(StrEnum):
     """Name where a command's error output goes when it is not a file"""
 
@@ -808,7 +813,15 @@ class Executor:
         error_destination = await self.error_destination(redirections, state, merge_stderr)
         try:
             stdin = await self.apply_input_redirections(stdin, redirections, state)
-            result = await self.dispatch(arguments[0], arguments[1:], stdin, error_destination, state, in_pipeline)
+            attached_to_terminal = (
+                not in_pipeline
+                and error_destination == ErrorDestination.STDERR
+                and not any(redirection.kind in OUTPUT_REDIRECTION_KINDS for redirection in redirections)
+                and state.is_attached_to_terminal()
+            )
+            result = await self.dispatch(
+                arguments[0], arguments[1:], stdin, error_destination, state, in_pipeline, attached_to_terminal
+            )
         finally:
             for name, value in saved_variables.items():
                 if value is None:
@@ -843,6 +856,7 @@ class Executor:
         error_destination: "ErrorDestination | Path",
         state: ShellState,
         in_pipeline: bool = False,
+        attached_to_terminal: bool = False,
     ) -> ExecutionResult:
         """Run a named command as a function, a builtin, or a registered command
 
@@ -853,6 +867,7 @@ class Executor:
             error_destination: Where the command's error output goes
             state: The shell state to run against
             in_pipeline: Whether a function call should stream in its own task against a copy of the state
+            attached_to_terminal: Whether a registered command's output reaches the terminal unredirected
 
         Returns:
             The command's output and exit code
@@ -874,7 +889,9 @@ class Executor:
             return ExecutionResult.empty(EXIT_CODE_COMMAND_NOT_FOUND)
         if command.input_kinds != frozenset({InputKind.ARGUMENTS}):
             stdin = self.take_pending_stdin(stdin, state)
-        return await self.run_registered_command(command, arguments, stdin, error_destination, state)
+        return await self.run_registered_command(
+            command, arguments, stdin, error_destination, state, attached_to_terminal
+        )
 
     async def call_function(
         self,
@@ -936,6 +953,7 @@ class Executor:
         stdin: StdinValue | None,
         error_destination: "ErrorDestination | Path",
         state: ShellState,
+        attached_to_terminal: bool = False,
     ) -> ExecutionResult:
         """Run a registered command with its input converted to a kind it accepts
 
@@ -945,6 +963,7 @@ class Executor:
             stdin: Standard input, or None
             error_destination: Where the command's error output goes
             state: The shell state to run against
+            attached_to_terminal: Whether the command's output reaches the terminal unredirected
 
         Returns:
             The command's output in its preferred kind, with errors interleaved when they join standard output
@@ -970,6 +989,7 @@ class Executor:
             stdin_kind=stdin_kind,
             stdout_kind=stdout_kind,
             state=invocation_state,
+            attached_to_terminal=attached_to_terminal,
         )
         command_result = command.run(invocation)
         if inspect.isawaitable(command_result):

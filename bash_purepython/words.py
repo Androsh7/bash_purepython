@@ -1,9 +1,10 @@
 """Tokenise one simple command into words, redirections and assignments, and expand the words"""
 
 # Standard libraries
+import glob
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from bash_purepython.workflow import Redirection, RedirectionKind
 WHITESPACE_CHARACTERS = frozenset(" \t\n")
 WORD_SPLIT_PATTERN = re.compile(r"([ \t\n]+)")
 ASSIGNMENT_PATTERN = re.compile(r"^([A-Za-z_]\w*)=")
+GLOB_CHARACTER_PATTERN = re.compile(r"[*?\[]")
 VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_]\w*")
 SPECIAL_PARAMETER_CHARACTERS = frozenset("?#@*$!0123456789")
 HEREDOC_DELIMITER_PATTERN = re.compile(r"(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|(\\?[^\s;&|()<>'\"]+))")
@@ -675,10 +677,81 @@ def expand_tilde(text: str, state: ShellState) -> str:
     return text
 
 
+@dataclass(frozen=True)
+class ExpandedField:
+    """Hold one field after expansion, with the glob pattern that stands for it
+
+    The pattern equals the text except that quoted characters are escaped, so only unquoted wildcards match
+    """
+
+    text: str
+    pattern: str
+    has_wildcard: bool
+
+
+@dataclass
+class FieldBuilder:
+    """Collect the fields one word expands to, remembering which characters were quoted"""
+
+    fields: list[ExpandedField] = field(default_factory=list)
+    text: str | None = None
+    pattern: str = ""
+    has_wildcard: bool = False
+
+    def add_quoted(self, text: str) -> None:
+        """Append text whose wildcard characters are literal
+
+        Args:
+            text: The quoted text, which starts a field even when empty
+        """
+        self.text = (self.text or "") + text
+        self.pattern += glob.escape(text)
+
+    def add_unquoted(self, text: str) -> None:
+        """Append text whose wildcard characters match paths
+
+        Args:
+            text: The unquoted text
+        """
+        self.text = (self.text or "") + text
+        self.pattern += text
+        if GLOB_CHARACTER_PATTERN.search(text):
+            self.has_wildcard = True
+
+    def end_field(self) -> None:
+        """Finish the field being built, if one was started"""
+        if self.text is None:
+            return
+        self.fields.append(ExpandedField(text=self.text, pattern=self.pattern, has_wildcard=self.has_wildcard))
+        self.text = None
+        self.pattern = ""
+        self.has_wildcard = False
+
+
+def expand_pathnames(expanded_field: ExpandedField, state: ShellState) -> list[str]:
+    """Return the paths a field's unquoted wildcards match, or the field itself when it matches nothing
+
+    Hidden files match only a pattern that names the leading dot. Relative patterns are matched against
+    the shell's current directory
+
+    Args:
+        expanded_field: The field and its pattern
+        state: The shell state holding the current directory
+
+    Returns:
+        The matching paths in sorted order, or the literal text as the only entry
+    """
+    if not expanded_field.has_wildcard:
+        return [expanded_field.text]
+    matches = sorted(glob.glob(expanded_field.pattern, root_dir=state.cwd))  # noqa: PTH207
+    return matches or [expanded_field.text]
+
+
 async def expand_word(word: Word, state: ShellState, run_substitution: RunSubstitution) -> list[str]:
     """Return the fields one word expands to
 
-    Unquoted expansions are split on whitespace and dropped when empty; quoted text is kept whole
+    Unquoted expansions are split on whitespace and dropped when empty; quoted text is kept whole. A field
+    with an unquoted ``*``, ``?`` or ``[`` is then replaced by the paths it matches, when it matches any
 
     Args:
         word: The word to expand
@@ -688,11 +761,10 @@ async def expand_word(word: Word, state: ShellState, run_substitution: RunSubsti
     Returns:
         Zero or more fields
     """
-    fields: list[str] = []
-    current: str | None = None
+    builder = FieldBuilder()
     for part_index, part in enumerate(word.parts):
         if part.quote == QuoteStyle.SINGLE:
-            current = (current or "") + part.text
+            builder.add_quoted(part.text)
             continue
         if part.quote == QuoteStyle.DOUBLE:
             expanded = await expand_text(
@@ -701,10 +773,10 @@ async def expand_word(word: Word, state: ShellState, run_substitution: RunSubsti
             if expanded == "" and part.text in ALL_POSITIONAL_SPELLINGS:
                 continue
             positional_fields = expanded.split(POSITIONAL_FIELD_SEPARATOR)
-            current = (current or "") + positional_fields[0]
+            builder.add_quoted(positional_fields[0])
             for positional_field in positional_fields[1:]:
-                fields.append(current)
-                current = positional_field
+                builder.end_field()
+                builder.add_quoted(positional_field)
             continue
         text = expand_tilde(part.text, state) if part_index == 0 else part.text
         expanded = await expand_text(text, state, run_substitution, in_double_quotes=False)
@@ -712,13 +784,13 @@ async def expand_word(word: Word, state: ShellState, run_substitution: RunSubsti
             if not token:
                 continue
             if token[0] in WHITESPACE_CHARACTERS:
-                if current is not None:
-                    fields.append(current)
-                    current = None
+                builder.end_field()
             else:
-                current = (current or "") + token
-    if current is not None:
-        fields.append(current)
+                builder.add_unquoted(token)
+    builder.end_field()
+    fields: list[str] = []
+    for expanded_field in builder.fields:
+        fields.extend(expand_pathnames(expanded_field, state))
     return fields
 
 

@@ -51,13 +51,13 @@ class HostCallHandle(Protocol):
         """Tell the host the engine stopped reading, so it can stop the command"""
 
 
-HostCallStarter = Callable[[str, list[str], str], HostCallHandle]
+HostCallStarter = Callable[[str, list[str], str, bool, str | None], HostCallHandle]
 
 
 class HostCommand(Command):
     """Run a command the host implements, streaming what it prints through the pipeline"""
 
-    input_kinds: ClassVar[frozenset[InputKind]] = frozenset({InputKind.ARGUMENTS})
+    input_kinds: ClassVar[frozenset[InputKind]] = frozenset({InputKind.ARGUMENTS, InputKind.TEXT})
     output_kinds: ClassVar[frozenset[OutputKind]] = frozenset({OutputKind.STREAM_TEXT})
 
     def __init__(self, name: str, start_host_call: HostCallStarter):
@@ -65,8 +65,9 @@ class HostCommand(Command):
 
         Args:
             name: The command name as typed in the shell
-            start_host_call: Takes the name, arguments and current directory and returns a handle on the
-                running command
+            start_host_call: Takes the name, arguments, current directory, whether the command is
+                attached to the terminal, and the standard input piped or redirected into it or None,
+                and returns a handle on the running command
         """
         self.name = name
         self.start_host_call = start_host_call
@@ -75,7 +76,11 @@ class HostCommand(Command):
         """Return a stream that relays the host command's output until it exits
 
         The shell's current directory travels with the call, since the host resolves relative paths itself and
-        the directory may have changed earlier on the same line
+        the directory may have changed earlier on the same line. So does whether the command is attached to
+        the terminal: an attached command may write to the terminal itself as it runs, which is what lets a
+        prompt appear before the command blocks reading a line, instead of relaying output through here.
+        Input piped or redirected into the command is handed over whole; without any, the host reads the
+        terminal
 
         Args:
             invocation: The arguments and shell state of this call
@@ -83,7 +88,14 @@ class HostCommand(Command):
         Returns:
             A lazy stream of the command's standard output
         """
-        handle = self.start_host_call(self.name, list(invocation.arguments), str(invocation.state.cwd))
+        piped_input = invocation.stdin if invocation.stdin_kind == InputKind.TEXT else None
+        handle = self.start_host_call(
+            self.name,
+            list(invocation.arguments),
+            str(invocation.state.cwd),
+            invocation.attached_to_terminal,
+            piped_input,
+        )
         return CommandResult(stdout=relay_host_output(handle, invocation), exit_code=EXIT_CODE_SUCCESS)
 
 
@@ -229,6 +241,11 @@ class PyodideSession:
         if value is not None:
             self.write_output(repr_shorten(value) + "\n")
         return json.dumps({"status": REPL_STATUS_DONE})
+
+    def repl_discard(self) -> None:
+        """Forget the lines of a block the console is still waiting to see finished"""
+        if self.console is not None:
+            self.console.buffer = []
 
     def repl_complete(self, text: str) -> str:
         """Return the console's completions for the end of a line as JSON

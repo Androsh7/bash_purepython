@@ -48,12 +48,18 @@ class FakeHost:
     handles: dict[str, FakeHostCallHandle]
     calls: list[tuple[str, list[str]]] = field(default_factory=list)
     directories: list[str] = field(default_factory=list)
+    attached: list[bool] = field(default_factory=list)
+    piped_inputs: list[str | None] = field(default_factory=list)
     output: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
-    def start(self, name: str, arguments: list[str], cwd: str) -> FakeHostCallHandle:
+    def start(
+        self, name: str, arguments: list[str], cwd: str, attached: bool, piped_input: str | None
+    ) -> FakeHostCallHandle:
+        self.piped_inputs.append(piped_input)
         self.calls.append((name, arguments))
         self.directories.append(cwd)
+        self.attached.append(attached)
         return self.handles[name]
 
 
@@ -103,6 +109,88 @@ def test_host_command_receives_the_directory_current_when_it_runs(tmp_path: Path
     run(session, "cd notes; fetchy")
 
     assert [Path(directory) for directory in host.directories] == [(tmp_path / "notes").resolve()]
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["fetchy", "true && fetchy", "if true; then fetchy; fi", "cd .; fetchy"],
+    ids=["alone", "after-and", "inside-if", "after-another-command"],
+)
+def test_host_command_is_attached_when_nothing_stands_between_it_and_the_terminal(
+    tmp_path: Path, host: FakeHost, script: str
+) -> None:
+    """Check that a host command writing straight to the terminal is told so"""
+    session = build_session(tmp_path, host)
+
+    run(session, script)
+
+    assert host.attached == [True]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "fetchy | head -n 1",
+        "echo x | fetchy",
+        "fetchy > saved.txt",
+        "fetchy >> saved.txt",
+        "fetchy 2> errors.txt",
+        "fetchy &> both.txt",
+        "fetchy 2>&1",
+        "value=$(fetchy)",
+        "{ fetchy; } > saved.txt",
+        "( fetchy ) | cat",
+    ],
+    ids=[
+        "piped-out",
+        "piped-in",
+        "stdout-to-file",
+        "stdout-appended",
+        "stderr-to-file",
+        "both-to-file",
+        "stderr-joined",
+        "captured",
+        "group-redirected",
+        "subshell-piped",
+    ],
+)
+def test_host_command_is_not_attached_when_its_output_is_piped_captured_or_redirected(
+    tmp_path: Path, host: FakeHost, script: str
+) -> None:
+    """Check that a host command whose output the shell must route is told it is not on the terminal"""
+    session = build_session(tmp_path, host)
+
+    run(session, script)
+
+    assert host.attached == [False]
+
+
+def test_host_command_receives_input_piped_into_it(tmp_path: Path, host: FakeHost) -> None:
+    """Check that the output of the previous pipeline stage is handed to the host command whole"""
+    session = build_session(tmp_path, host)
+
+    run(session, "printf 'one\\ntwo\\n' | fetchy")
+
+    assert host.piped_inputs == ["one\ntwo\n"]
+
+
+def test_host_command_receives_input_redirected_from_a_file(tmp_path: Path, host: FakeHost) -> None:
+    """Check that a file named after < is handed to the host command, which stays attached"""
+    (tmp_path / "answers.txt").write_text("bob\n", encoding="utf-8")
+    session = build_session(tmp_path, host)
+
+    run(session, "fetchy < answers.txt")
+
+    assert (host.piped_inputs, host.attached) == (["bob\n"], [True])
+
+
+def test_host_command_gets_no_input_when_nothing_is_piped(tmp_path: Path, host: FakeHost) -> None:
+    """Check that a host command run on its own is told there is no piped input, so it reads the terminal"""
+    session = build_session(tmp_path, host)
+
+    run(session, "fetchy")
+
+    assert host.piped_inputs == [None]
 
 
 def test_host_command_output_flows_through_a_pipeline(tmp_path: Path, host: FakeHost) -> None:
@@ -198,3 +286,20 @@ def test_command_names_cover_builtins_shipped_commands_and_host_commands(tmp_pat
     names = set(session.command_names())
 
     assert {"cd", "export", "cat", "echo", "fetchy", "broken"} <= names
+
+
+@dataclass
+class FakeConsole:
+    """Stand in for the Pyodide console, holding only the lines of an unfinished block"""
+
+    buffer: list[str]
+
+
+def test_repl_discard_forgets_an_unfinished_block(tmp_path: Path, host: FakeHost) -> None:
+    """Check that the lines of a block the console was still waiting on are dropped"""
+    session = build_session(tmp_path, host)
+    session.console = FakeConsole(buffer=["def half_typed():"])
+
+    session.repl_discard()
+
+    assert session.console.buffer == []

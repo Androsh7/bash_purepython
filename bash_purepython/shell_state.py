@@ -376,6 +376,8 @@ class ShellState:
             terminal_error(text)
 
         self.write_error = record_and_write_error
+        self.terminal_output_sink: OutputSink = self.output_sink
+        self.terminal_write_error: Callable[[str], None] = self.write_error
 
     @property
     def stdout(self) -> str:
@@ -413,7 +415,13 @@ class ShellState:
         )
         copied.output_sink = self.output_sink
         copied.write_error = self.write_error
+        copied.terminal_output_sink = self.terminal_output_sink
+        copied.terminal_write_error = self.terminal_write_error
         return copied
+
+    def is_attached_to_terminal(self) -> bool:
+        """Return whether both sinks still point at the terminal rather than a pipe, capture or file"""
+        return self.output_sink is self.terminal_output_sink and self.write_error is self.terminal_write_error
 
     def resolve_path(self, path_text: str) -> Path:
         """Return a path made absolute against the current directory
