@@ -18,6 +18,7 @@ from bash_purepython.arithmetic import evaluate_arithmetic
 # Project libraries
 from bash_purepython.block_parser import build_plan
 from bash_purepython.command.command import Command, CommandInvocation, ExitStatus, InputKind, OutputKind
+from bash_purepython.command.env import EnvCommandLine, parse_env_command_line
 from bash_purepython.command.registry import CommandRegistry
 from bash_purepython.conditional import conditional_body, evaluate_conditional
 from bash_purepython.parse_script import split_script_into_connected_commands
@@ -44,6 +45,7 @@ from bash_purepython.shell_state import (
     OutputLimitExceededError,
     OutputSink,
     PipeSink,
+    ProcessSubstitution,
     ProcessSubstitutionDirection,
     ReturnFromFunction,
     ShellError,
@@ -108,6 +110,7 @@ SCRIPT_COMMAND_NAMES = SHELL_COMMAND_NAMES | SOURCE_COMMAND_NAMES
 INLINE_SCRIPT_OPTION = "-c"
 ARRAY_ELEMENT_PATTERN = re.compile(r"^([A-Za-z_]\w*)\[(.+)\]$")
 PATH_SEPARATOR = "/"
+ENV_COMMAND_NAME = "env"
 EXIT_CODE_NOT_EXECUTABLE = 126
 EXIT_CODE_UNBOUND_VARIABLE = 127
 DEFAULT_OUTPUT_LIMIT_CHARACTERS = 16 << 20
@@ -407,6 +410,9 @@ class Executor:
         """
         for block in split_script_into_connected_commands(script):
             await asyncio.sleep(0)
+            outer_substitutions = state.process_substitutions
+            state.process_substitutions = []
+            state.last_status_exempt_from_errexit = False
             try:
                 node = build_plan(block)
                 result = await self.execute_node(node, state, stdin=None, direct_output=True)
@@ -426,7 +432,11 @@ class Executor:
                 state.write_error(f"bash: {error}\n")
                 state.last_exit_code = EXIT_CODE_FAILURE
                 continue
+            finally:
+                remove_process_substitution_files(state.process_substitutions)
+                state.process_substitutions = outer_substitutions
             state.last_exit_code = result.exit_code
+            state.last_status_exempt_from_errexit = result.exempt_from_errexit
             if (
                 ShellOption.ERREXIT in state.options
                 and result.exit_code != EXIT_CODE_SUCCESS
@@ -464,8 +474,6 @@ class Executor:
             Everything the script wrote to standard output, and its exit code
         """
         collector = CollectingSink(self.output_limit_characters)
-        outer_substitutions = state.process_substitutions
-        state.process_substitutions = []
         try:
             with redirected_sinks(state, output_sink=collector):
                 exit_code = await self.run_subshell_script(script, state)
@@ -473,8 +481,6 @@ class Executor:
             if error.collector is not collector:
                 raise
             raise ExpansionError(f"command substitution: {error}") from error
-        finally:
-            state.process_substitutions = outer_substitutions
         return collector.text(), exit_code
 
     async def finish_process_substitutions(self, state: ShellState) -> None:
@@ -493,8 +499,7 @@ class Executor:
                     script = process_substitution_script(substitution.script, substitution.direction, substitution.path)
                     await self.run_subshell_script(script, state.copy())
         finally:
-            for substitution in pending:
-                substitution.path.unlink(missing_ok=True)
+            remove_process_substitution_files(pending)
 
     def substitution_runner(self, state: ShellState) -> SubstitutionRunner:
         """Return the callback word expansion uses for ``$( )`` and backticks
@@ -552,7 +557,10 @@ class Executor:
             state.functions[node.name] = node.body
             return ExecutionResult.empty(EXIT_CODE_SUCCESS)
         body, body_state, redirections = self.compound_body(node, state)
-        return await self.execute_compound(body, body_state, stdin, redirections, direct_output)
+        result = await self.execute_compound(body, body_state, stdin, redirections, direct_output)
+        if not isinstance(node, SubshellNode) and result.exit_code != EXIT_CODE_SUCCESS:
+            result.exempt_from_errexit = state.last_status_exempt_from_errexit
+        return result
 
     def compound_body(self, node: PlanNode, state: ShellState) -> tuple[CompoundBody, ShellState, list[Redirection]]:
         """Return how to run a compound node, the state it runs against, and its redirections
@@ -1047,11 +1055,13 @@ class Executor:
         Returns:
             The condition's exit code
         """
+        body_exempt_from_errexit = state.last_status_exempt_from_errexit
         state.condition_depth += 1
         try:
             return await self.run_script(script, state)
         finally:
             state.condition_depth -= 1
+            state.last_status_exempt_from_errexit = body_exempt_from_errexit
 
     async def run_while(self, node: WhileNode | UntilNode, state: ShellState) -> int:
         """Run a while or until loop
@@ -1357,6 +1367,10 @@ class Executor:
         """
         if name in state.functions and not skip_functions:
             return await self.call_function(name, arguments, stdin, error_destination, state, in_pipeline)
+        if name == ENV_COMMAND_NAME:
+            env_command_line = parse_env_command_line(arguments)
+            if env_command_line is not None:
+                return await self.run_env_command(env_command_line, stdin, error_destination, state, in_pipeline)
         builtin = self.builtins.get(name)
         names_a_path = PATH_SEPARATOR in name and builtin is None and self.registry.get(name) is None
         if name in SCRIPT_COMMAND_NAMES or names_a_path:
@@ -1378,6 +1392,37 @@ class Executor:
         return await self.run_registered_command(
             command, arguments, stdin, error_destination, state, attached_to_terminal
         )
+
+    async def run_env_command(
+        self,
+        command_line: EnvCommandLine,
+        stdin: StdinValue | None,
+        error_destination: "ErrorDestination | Path",
+        state: ShellState,
+        in_pipeline: bool,
+    ) -> ExecutionResult:
+        """Run the command an ``env`` call names, against a copy of the state with its environment changed
+
+        Args:
+            command_line: The environment changes and the command
+            stdin: Standard input, or None
+            error_destination: Where the command's error output goes
+            state: The live shell state, left unchanged
+            in_pipeline: Whether the command is a pipeline stage
+
+        Returns:
+            The command's output and exit code
+        """
+        command_state = state.copy()
+        command_state.pending_stdin = state.pending_stdin
+        command_line.apply(command_state)
+        name, *arguments = command_line.command
+        try:
+            return await self.dispatch(
+                name, arguments, stdin, error_destination, command_state, in_pipeline, skip_functions=True
+            )
+        finally:
+            state.pending_stdin = command_state.pending_stdin
 
     async def run_script_command(
         self,
@@ -1884,14 +1929,19 @@ class Executor:
             state: The shell state whose variables change
 
         Returns:
-            Zero
+            Zero, or one when a readonly variable was given a value
         """
+        exit_code = EXIT_CODE_SUCCESS
         for argument in arguments:
             name, separator, value = argument.partition("=")
+            if separator and name in state.readonly_names:
+                state.write_error(f"bash: {name}: readonly variable\n")
+                exit_code = EXIT_CODE_FAILURE
+                continue
             if separator:
                 state.variables[name] = value
             state.exported_names.add(name)
-        return EXIT_CODE_SUCCESS
+        return exit_code
 
     async def builtin_unset(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
         """Remove variables and functions by name
@@ -1902,10 +1952,17 @@ class Executor:
             state: The shell state to change
 
         Returns:
-            Zero
+            Zero, or one when a readonly variable was named
         """
+        exit_code = EXIT_CODE_SUCCESS
+        functions_only = False
         for name in arguments:
             if name.startswith("-"):
+                functions_only = "f" in name
+                continue
+            if not functions_only and name in state.readonly_names:
+                state.write_error(f"bash: unset: {name}: cannot unset: readonly variable\n")
+                exit_code = EXIT_CODE_FAILURE
                 continue
             element_match = ARRAY_ELEMENT_PATTERN.match(name)
             if element_match is not None:
@@ -1919,7 +1976,7 @@ class Executor:
             state.arrays.pop(name, None)
             state.functions.pop(name, None)
             state.exported_names.discard(name)
-        return EXIT_CODE_SUCCESS
+        return exit_code
 
     async def builtin_exit(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
         """Stop the script
@@ -2242,6 +2299,16 @@ def restore_local_scope(scope: dict[str, tuple[str | None, dict[int, str] | None
             state.variables[name] = value
         if elements is not None:
             state.arrays[name] = elements
+
+
+def remove_process_substitution_files(substitutions: list[ProcessSubstitution]) -> None:
+    """Delete the files behind a block's process substitutions
+
+    Args:
+        substitutions: The substitutions whose files to delete
+    """
+    for substitution in substitutions:
+        substitution.path.unlink(missing_ok=True)
 
 
 def record_job_outcome(job: Job, task: asyncio.Task) -> None:

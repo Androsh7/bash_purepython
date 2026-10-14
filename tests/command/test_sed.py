@@ -316,3 +316,37 @@ def test_sed_append_text_may_continue_into_the_next_expression(shell: ShellHarne
     run = shell.run(script)
 
     assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("echo baaac | sed 's/a*/x/g'", "xbxcx\n"),
+        ("echo hello | sed 's/l*/<&>/g'", "<>h<>e<ll>o<>\n"),
+        ("echo baaac | sed 's/a*/x/2'", "bxc\n"),
+    ],
+    ids=["global", "global_with_ampersand", "numbered"],
+)
+def test_sed_skips_an_empty_match_right_after_a_match(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that s///g does not replace the empty match where the previous match ended"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("printf a > f1; printf 'b\\n' > f2; sed '' f1 f2", "a\nb\n"),
+        ("printf a > f1; printf b > f2; sed -s '' f1 f2", "a\nb"),
+        ("printf a > f1; printf 'b\\n' > f2; sed -n '$p' f1 f2", "b\n"),
+    ],
+    ids=["between_files", "separate_files", "only_last_printed"],
+)
+def test_sed_keeps_a_missing_newline_only_at_the_end_of_all_output(
+    shell: ShellHarness, script: str, expected: str
+) -> None:
+    """Check that a file without a final newline is still separated from the output that follows it"""
+    run = shell.run(script)
+
+    assert run.stdout == expected

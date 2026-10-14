@@ -739,9 +739,13 @@ def substitute(pattern_space: str, instruction: Instruction) -> tuple[str, bool]
         return pattern_space, False
     pieces: list[str] = []
     last_end = 0
+    previous_match_end: int | None = None
     seen = 0
     replaced = False
     for match in instruction.regex.finditer(pattern_space):
+        if match.start() == match.end() == previous_match_end:
+            continue
+        previous_match_end = match.end()
         seen += 1
         if seen < instruction.occurrence:
             continue
@@ -1114,9 +1118,11 @@ async def edit_stream(
         separate: Whether each file restarts line numbers and ranges
 
     Yields:
-        Output text as each line is processed
+        Output text as each line is processed, with the newline a source's last line lacked restored once more
+        output follows it
     """
     groups = [[path_text] for path_text in paths] if separate else [paths]
+    missing_newline = False
     try:
         for group in groups:
             program.start_file()
@@ -1125,7 +1131,10 @@ async def edit_stream(
                 async for line, is_last in pairs:
                     text, quit_requested = program.process_line(line, is_last)
                     if text:
+                        if missing_newline:
+                            yield "\n"
                         yield text
+                        missing_newline = not text.endswith("\n")
                     if quit_requested:
                         if program.exit_code != EXIT_CODE_SUCCESS:
                             invocation.exit_status.code = program.exit_code

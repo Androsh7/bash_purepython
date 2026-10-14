@@ -48,8 +48,10 @@ def describe_elf(sample: bytes) -> str:
         sample: The first bytes of the file
 
     Returns:
-        The word size, byte order and object type
+        The word size, byte order and object type, or a note that the header is cut short
     """
+    if len(sample) <= ELF_DATA_OFFSET:
+        return "ELF (truncated)"
     bits = "64-bit" if sample[ELF_CLASS_OFFSET] == ELF_64_BIT else "32-bit"
     byte_order = "MSB" if sample[ELF_DATA_OFFSET] == ELF_BIG_ENDIAN else "LSB"
     object_type = ELF_TYPES.get(sample[ELF_TYPE_OFFSET] if len(sample) > ELF_TYPE_OFFSET else 0, "file")

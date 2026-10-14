@@ -263,6 +263,9 @@ class PrintfCommand(Command):
         formatter = PrintfFormatter(arguments[0], arguments[1:], invocation.state)
         text = formatter.format_all()
         if target_variable is not None:
+            if target_variable in invocation.state.readonly_names:
+                invocation.state.write_error(f"bash: {target_variable}: readonly variable\n")
+                return CommandResult(stdout="", exit_code=EXIT_CODE_FAILURE)
             invocation.state.arrays.pop(target_variable, None)
             invocation.state.variables[target_variable] = text
             return CommandResult(stdout="", exit_code=formatter.exit_code)

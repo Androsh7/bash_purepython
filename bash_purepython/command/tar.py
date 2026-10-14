@@ -20,6 +20,7 @@ from bash_purepython.streams import TEXT_ENCODING
 STDIO_PATH = "-"
 TAR_FAILURE_EXIT_CODE = 2
 BUNDLED_FLAG_CHARACTERS = frozenset("cxtfzvjJC")
+VALUE_FLAG_CHARACTERS = frozenset("fC")
 GZIP_WRITE_MODE = "w:gz"
 BZIP2_WRITE_MODE = "w:bz2"
 XZ_WRITE_MODE = "w:xz"
@@ -44,7 +45,10 @@ class TarOptions:
 
 
 def normalise_arguments(arguments: list[str]) -> list[str]:
-    """Return the arguments with an old-style bundled first argument such as ``czf`` rewritten as ``-czf``
+    """Return the arguments with an old-style bundled first argument such as ``cvfz`` split into options
+
+    Each letter that takes a value, ``f`` or ``C``, takes the next argument after the bundle in order, as GNU
+    tar does, so ``cvfz out.tgz dir`` means ``-c -v -f out.tgz -z dir``
 
     Args:
         arguments: The arguments after the command name
@@ -55,9 +59,15 @@ def normalise_arguments(arguments: list[str]) -> list[str]:
     if not arguments:
         return arguments
     first = arguments[0]
-    if first and not first.startswith("-") and set(first) <= BUNDLED_FLAG_CHARACTERS:
-        return ["-" + first, *arguments[1:]]
-    return arguments
+    if not first or first.startswith("-") or not set(first) <= BUNDLED_FLAG_CHARACTERS:
+        return arguments
+    options: list[str] = []
+    remaining = arguments[1:]
+    for letter in first:
+        options.append(f"-{letter}")
+        if letter in VALUE_FLAG_CHARACTERS and remaining:
+            options.append(remaining.pop(0))
+    return [*options, *remaining]
 
 
 def write_mode_for(gzip_requested: bool, bzip2_requested: bool, xz_requested: bool) -> str:

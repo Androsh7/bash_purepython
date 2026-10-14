@@ -7,6 +7,7 @@ import itertools
 import os
 import random
 import re
+import shlex
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
@@ -107,9 +108,14 @@ class WordPart:
 
 @dataclass(frozen=True)
 class Word:
-    """Hold one unexpanded word as its quoted parts"""
+    """Hold one unexpanded word as its quoted parts
+
+    ``array_words`` holds the words of a ``name=(...)`` argument, such as one passed to ``declare``, whose
+    parts are then only the ``name=`` prefix
+    """
 
     parts: list[WordPart]
+    array_words: tuple["Word", ...] | None = None
 
     def raw_text(self) -> str:
         """Return the parts joined without their quotes
@@ -117,7 +123,10 @@ class Word:
         Returns:
             The word text with quoting removed but expansions untouched
         """
-        return "".join(part.text for part in self.parts)
+        text = "".join(part.text for part in self.parts)
+        if self.array_words is None:
+            return text
+        return f"{text}({' '.join(array_word.raw_text() for array_word in self.array_words)})"
 
 
 @dataclass(frozen=True)
@@ -707,6 +716,8 @@ def lookup_parameter(name: str, state: ShellState) -> str:
         return state.arrays[name].get(0, "")
     if name == HOME_VARIABLE_NAME:
         return str(Path.home())
+    if name == FIELD_SEPARATOR_VARIABLE_NAME:
+        return DEFAULT_FIELD_SEPARATORS
     if name == RANDOM_VARIABLE_NAME:
         return str(random.randrange(RANDOM_LIMIT))
     if name == SECONDS_VARIABLE_NAME:
@@ -715,10 +726,10 @@ def lookup_parameter(name: str, state: ShellState) -> str:
 
 
 def with_array_value(word: Word, array_words: list[Word]) -> Word:
-    """Return a ``name=`` word with a parenthesised array value written back as one argument
+    """Return a ``name=`` word carrying a parenthesised array value, to be expanded as one argument
 
-    The parentheses and the spaces between elements are kept out of field splitting, so a builtin such as
-    ``declare`` receives ``name=(first second)`` as a single argument
+    A builtin such as ``declare`` then receives ``name=(first second)`` as a single argument, with each
+    element quoted so that ``parse_array_literal`` recovers the elements
 
     Args:
         word: The ``name=`` or ``name+=`` word
@@ -727,13 +738,7 @@ def with_array_value(word: Word, array_words: list[Word]) -> Word:
     Returns:
         The combined word
     """
-    parts = [*word.parts, WordPart(text="(", quote=QuoteStyle.DOUBLE)]
-    for offset, array_word in enumerate(array_words):
-        if offset:
-            parts.append(WordPart(text=" ", quote=QuoteStyle.DOUBLE))
-        parts.extend(array_word.parts)
-    parts.append(WordPart(text=")", quote=QuoteStyle.DOUBLE))
-    return Word(parts=parts)
+    return Word(parts=word.parts, array_words=tuple(array_words))
 
 
 def positional_is_set(name: str, state: ShellState) -> bool:
@@ -761,7 +766,12 @@ def check_unset(name: str, state: ShellState) -> None:
     """
     if ShellOption.NOUNSET not in state.options:
         return
-    if name in DEFAULT_VARIABLES or name in (HOME_VARIABLE_NAME, RANDOM_VARIABLE_NAME, SECONDS_VARIABLE_NAME):
+    if name in DEFAULT_VARIABLES or name in (
+        HOME_VARIABLE_NAME,
+        FIELD_SEPARATOR_VARIABLE_NAME,
+        RANDOM_VARIABLE_NAME,
+        SECONDS_VARIABLE_NAME,
+    ):
         return
     if VARIABLE_NAME_PATTERN.fullmatch(name) or (name.isdigit() and name != "0"):
         raise UnboundVariableError(f"{name}: unbound variable")
@@ -900,10 +910,10 @@ def glob_to_regex(pattern: str, anchor_start: bool = False, anchor_end: bool = F
             if closing == -1:
                 pieces.append(re.escape(character))
             else:
-                body = pattern[index + 1 : closing]
+                body = pattern[index + 1 : closing].replace("\\", "\\\\").replace("[", "\\[")
                 if body.startswith("!"):
                     body = "^" + body[1:]
-                pieces.append("[" + body.replace("\\", "\\\\") + "]")
+                pieces.append("[" + body + "]")
                 index = closing
         else:
             pieces.append(re.escape(character))
@@ -931,18 +941,18 @@ def remove_pattern(value: str, pattern: str, from_start: bool, longest: bool) ->
     return value
 
 
-def substitute_pattern(value: str, operand: str, operator: str) -> str:
+def substitute_pattern(value: str, pattern: str, replacement: str, operator: str) -> str:
     """Return the value with a pattern replaced, as ``/`` ``//`` ``/#`` ``/%`` do
 
     Args:
         value: The text to edit
-        operand: The ``pattern/replacement`` text, where the replacement may be omitted
+        pattern: The shell pattern to replace
+        replacement: The text that replaces each match
         operator: Which of the four substitution operators was written
 
     Returns:
         The edited value
     """
-    pattern, _, replacement = split_substitution_operand(operand)
     anchored_start = operator == "/#"
     anchored_end = operator == "/%"
     expression = glob_to_regex(pattern, anchor_start=anchored_start, anchor_end=anchored_end)
@@ -984,12 +994,10 @@ def modify_case(value: str, pattern: str, operator: str) -> str:
     upper = operator.startswith("^")
     first_only = len(operator) == 1
     characters = list(value)
-    for index, character in enumerate(characters):
+    for index, character in enumerate(characters[:1] if first_only else characters):
         if pattern and not fnmatch.fnmatchcase(character, pattern):
             continue
         characters[index] = character.upper() if upper else character.lower()
-        if first_only:
-            break
     return "".join(characters)
 
 
@@ -1017,6 +1025,26 @@ async def expand_operand(
         if len(words) == 1 and not redirections and not assignments:
             return await expand_word_unsplit(words[0], state, run_substitution)
     return await expand_text(operand, state, run_substitution, in_double_quotes=True)
+
+
+async def expand_operand_as_pattern(operand: str, state: ShellState, run_substitution: RunSubstitution) -> str:
+    """Return the pattern after a ``#`` ``%`` ``/`` ``^`` or ``,`` operator, with quoted characters matching literally
+
+    Args:
+        operand: The raw pattern text
+        state: The shell state to read variables from
+        run_substitution: Runs a script and returns its output
+
+    Returns:
+        The pattern, with quoted and backslash-escaped text escaped
+    """
+    try:
+        words, redirections, assignments = tokenize_simple_command(operand)
+    except ShellSyntaxError:
+        words, redirections, assignments = [], [], []
+    if len(words) == 1 and not redirections and not assignments:
+        return await expand_word_as_pattern(words[0], state, run_substitution)
+    return await expand_text(operand, state, run_substitution, in_double_quotes=False)
 
 
 @dataclass
@@ -1193,13 +1221,19 @@ async def apply_parameter_operator(
         )
     if operator == SUBSTRING_OPERATOR:
         return await apply_substring_operator(reference, operand, state, run_substitution)
-    pattern = await expand_text(operand, state, run_substitution, in_double_quotes=False)
+    if operator in SUBSTITUTION_OPERATORS:
+        pattern_text, _, replacement_text = split_substitution_operand(operand)
+        pattern = await expand_operand_as_pattern(pattern_text, state, run_substitution)
+        replacement = await expand_operand(
+            replacement_text.replace("\\/", "/"), state, run_substitution, in_double_quotes
+        )
+        values = [substitute_pattern(value, pattern, replacement, operator) for value in reference.values]
+        return reference.joiner.join(values)
+    pattern = await expand_operand_as_pattern(operand, state, run_substitution)
     if operator in REMOVAL_OPERATORS:
         from_start = operator.startswith("#")
         longest = len(operator) == 2
         values = [remove_pattern(value, pattern, from_start, longest) for value in reference.values]
-    elif operator in SUBSTITUTION_OPERATORS:
-        values = [substitute_pattern(value, pattern, operator) for value in reference.values]
     else:
         values = [modify_case(value, pattern, operator) for value in reference.values]
     return reference.joiner.join(values)
@@ -1563,6 +1597,10 @@ async def expand_word(word: Word, state: ShellState, run_substitution: RunSubsti
     Returns:
         Zero or more fields
     """
+    if word.array_words is not None:
+        prefix = await expand_word_unsplit(Word(parts=word.parts), state, run_substitution)
+        elements = await expand_words(list(word.array_words), state, run_substitution)
+        return [f"{prefix}({' '.join(shlex.quote(element) for element in elements)})"]
     fields: list[str] = []
     for expanded_word in expand_braces(word):
         fields.extend(await expand_fields(expanded_word, state, run_substitution))

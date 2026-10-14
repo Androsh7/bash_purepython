@@ -35,6 +35,8 @@ def test_mktemp_creates_a_file_under_the_given_directory(shell: ShellHarness, tm
 
 def test_mktemp_uses_the_tmpdir_variable(shell: ShellHarness, tmp_path: Path) -> None:
     """Check that TMPDIR decides where a bare template goes"""
+    (tmp_path / "scratch").mkdir()
+
     run = shell.run("TMPDIR=scratch; mktemp")
 
     printed = run.stdout.rstrip("\n")
@@ -86,3 +88,17 @@ def test_mktemp_rejects_a_template_with_too_few_placeholders(shell: ShellHarness
 
     assert run.exit_code == 1
     assert "too few X's" in run.stderr
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["mktemp nodir/fooXXX", "mktemp -p nodir XXX", "mktemp -d -p nodir"],
+    ids=["template_path", "directory_option", "directory_kind"],
+)
+def test_mktemp_fails_when_the_directory_does_not_exist(shell: ShellHarness, tmp_path: Path, script: str) -> None:
+    """Check that a missing directory is reported, not created, and fails the command"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == ("", 1)
+    assert run.stderr
+    assert not (tmp_path / "nodir").exists()

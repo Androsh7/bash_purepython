@@ -23,6 +23,16 @@ NO_CONTEXT = 0
 CURRENT_DIRECTORY = "."
 OPTIONS_END = "--"
 NUMERIC_SHORTHAND_PATTERN = re.compile(r"^-([0-9]+)$")
+VALUE_OPTION_LONG_NAMES = {
+    "-e": "--regexp",
+    "--regexp": "--regexp",
+    "-A": "--after-context",
+    "--after-context": "--after-context",
+    "-B": "--before-context",
+    "--before-context": "--before-context",
+    "-C": "--context",
+    "--context": "--context",
+}
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,9 @@ class MatchOptions:
 def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
     """Return the arguments with the ``-<count>`` form rewritten as ``-C <count>``
 
+    An option that takes a value is joined to it as ``--long=value``, so a value starting with a dash, as in
+    ``-e -1``, is kept as the value rather than read as an option or as the shorthand
+
     Args:
         arguments: The arguments after the command name
 
@@ -51,15 +64,22 @@ def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
         The rewritten arguments
     """
     expanded: list[str] = []
-    for index, argument in enumerate(arguments):
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
         if argument == OPTIONS_END:
             expanded.extend(arguments[index:])
             break
+        long_name = VALUE_OPTION_LONG_NAMES.get(argument)
         match = NUMERIC_SHORTHAND_PATTERN.match(argument)
-        if match:
+        if long_name is not None and index + 1 < len(arguments):
+            expanded.append(f"{long_name}={arguments[index + 1]}")
+            index += 1
+        elif match:
             expanded.extend(["-C", match.group(1)])
         else:
             expanded.append(argument)
+        index += 1
     return expanded
 
 
@@ -354,8 +374,8 @@ class GrepCommand(Command):
             files_only=parsed.files_with_matches,
             quiet=parsed.quiet,
             only_matching=parsed.only_matching,
-            before_context=max(before_context, context),
-            after_context=max(after_context, context),
+            before_context=before_context if parsed.before_context is not None else context,
+            after_context=after_context if parsed.after_context is not None else context,
             separate_groups=any(value is not None for value in context_values),
         )
         stream = grep_targets(invocation, targets, regex, options)

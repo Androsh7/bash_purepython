@@ -422,6 +422,7 @@ class ShellState:
     readonly_names: set[str] = field(default_factory=set)
     local_scopes: list[dict[str, tuple[str | None, dict[int, str] | None]]] = field(default_factory=list)
     condition_depth: int = 0
+    last_status_exempt_from_errexit: bool = False
     read_line: Callable[[], Any] | None = None
 
     def __post_init__(self):

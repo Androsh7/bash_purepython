@@ -88,3 +88,26 @@ def test_sha256sum_reports_a_missing_file_and_continues(shell: ShellHarness, tmp
     assert run.exit_code == 1
     assert "missing.txt" in run.stderr
     assert run.stdout == f"{HELLO_SHA256}  a.txt\n"
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["echo garbage | sha256sum -c", "echo junk > sums; md5sum -c sums", "printf '' | sha1sum -c"],
+    ids=["standard_input", "file", "empty"],
+)
+def test_check_fails_when_no_line_is_a_checksum(shell: ShellHarness, script: str) -> None:
+    """Check that a checksum file with no properly formatted line fails verification"""
+    run = shell.run(script)
+
+    assert run.exit_code == 1
+    assert "no properly formatted" in run.stderr
+
+
+def test_check_warns_about_malformed_lines_beside_valid_ones(shell: ShellHarness, tmp_path: Path) -> None:
+    """Check that malformed lines are reported while the valid ones are still verified"""
+    (tmp_path / "hello").write_bytes(b"hello\n")
+
+    run = shell.run("(sha256sum hello; echo junk) | sha256sum -c")
+
+    assert (run.stdout, run.exit_code) == ("hello: OK\n", 0)
+    assert "improperly formatted" in run.stderr

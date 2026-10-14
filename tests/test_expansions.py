@@ -201,3 +201,28 @@ def test_negative_subscript_counts_back_from_the_highest_index(shell: ShellHarne
     run = shell.run(script)
 
     assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("x='*abc'; echo \"${x#\"*\"}\" ${x#\\*} ${x#'*'} ${x#*}", "abc abc abc *abc\n"),
+        ('z=\'a*b*c\'; echo "${z//\\*/+}" "${z/\'*\'/ }" "${z//"*"}"', "a+b+c a b*c abc\n"),
+        ('q=\'x[y]\'; echo "${q#"x["}" "${q/"["/<}"', "y] x<y]\n"),
+        ('w=\'hello world\'; v=lo; echo "${w/$v/LO}" "${w#*"$v"}" "${w/o/\\/}"', "helLO world  world hell/ world\n"),
+        ("p=abc; echo ${p^b} ${p^a} ${p^^[ab]}", "abc Abc ABc\n"),
+    ],
+    ids=["removal", "substitution", "bracket", "variables_and_slash", "case"],
+)
+def test_parameter_patterns_match_quoted_characters_literally(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that quoted or escaped glob characters in a pattern operand match only themselves"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+def test_nounset_treats_ifs_as_set(shell: ShellHarness) -> None:
+    """Check that set -u allows saving and restoring IFS before it was ever assigned"""
+    run = shell.run('set -u; old=$IFS; IFS=:; IFS=$old; x="a b"; set -- $x; echo $#')
+
+    assert (run.stdout, run.exit_code) == ("2\n", 0)

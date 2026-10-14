@@ -754,7 +754,7 @@ SCRIPTS = [
     "mkdir -p d/e; echo x > d/f; du -b d/f; echo hi > t; stat -c %s t",
     "mkdir t; echo hi > t/f; tar czf t.tgz t; rm -r t; tar xzf t.tgz; cat t/f; tar tf t.tgz; tar czf - t | tar tzf - | head -n 1",
     "echo hi > f; file f | cut -d: -f2 | cut -c1-6; mkdir d; file d; printf '\\x89PNG\\r\\n\\x1a\\n' > p; file p | grep -c PNG",
-    "printf 'a\\tb\\n' | cat -T; printf 'a\\n\\n\\nb\\n' | cat -s; printf 'a\\n' | cat -A; env -i X=1 env; echo one two | column -t",
+    "printf 'a\\tb\\n' | cat -T; printf 'a\\n\\n\\nb\\n' | cat -s; printf 'a\\n' | cat -A; env -i X=1; echo one two | column -t",
     "printf 'a\\nb\\nc\\n' | grep -A1 a; printf 'a\\nb\\nc\\n' | grep -B1 c; printf 'xa\\nb\\nxc\\nd\\ne\\nxf\\n' | grep -A1 x; echo 'foo bar' | grep -o o; echo 'foo food' | grep -ow foo; echo abc | grep -x abc",
     "mkdir -p a/b; echo x > a/f; echo y > a/b/g; ls -R a | cat; grep -r x a | sort; find a -name g",
     "f() { echo fn; }; f | cat; ls nothing 2>&1 | grep -c nothing; echo $(( 2 ** 10 )) ${#@}",

@@ -847,3 +847,77 @@ def test_process_substitution_removes_its_temporary_files(shell: ShellHarness) -
     run = shell.run('f=$(echo <(echo a)); cat <(echo b) > /dev/null; echo "$f"')
 
     assert not Path(run.stdout.strip()).exists()
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'f() { echo start; cat "$1"; }; f <(echo hi)',
+        "for x in 1; do echo start; cat <(echo hi); done",
+        'g() { echo start; read -r line < "$1"; echo "$line"; }; g <(echo hi)',
+    ],
+    ids=["function_body", "loop_body", "function_reading_the_file"],
+)
+def test_process_substitution_outlives_the_blocks_of_a_nested_body(shell: ShellHarness, script: str) -> None:
+    """Check that a function or loop body can still read a substitution its caller created"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.stderr) == ("start\nhi\n", "")
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "set -e; for x in a; do false && true; done; echo after",
+        "set -e; if true; then false && true; fi; echo after",
+        "set -e; { false && true; }; echo after",
+        "set -e; case a in a) false && true;; esac; echo after",
+        "set -e; i=0; while [ $i -lt 1 ]; do i=1; false && true; done; echo after",
+    ],
+    ids=["for", "if", "group", "case", "while"],
+)
+def test_errexit_ignores_a_compound_command_whose_last_list_was_exempt(shell: ShellHarness, script: str) -> None:
+    """Check that a compound command failing only because of an ignored && list does not stop the script"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == ("after\n", 0)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "set -e; f() { false && true; }; f; echo after",
+        "set -e; ( false && true ); echo after",
+        "set -e; for x in a; do false; done; echo after",
+    ],
+    ids=["function", "subshell", "plain_failure_in_loop"],
+)
+def test_errexit_still_stops_on_a_failure_that_is_not_exempt(shell: ShellHarness, script: str) -> None:
+    """Check that functions, subshells and plain failures inside loops still trigger errexit"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == ("", 1)
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("env echo hi there", "hi there\n"),
+        ('export A=1; env -u A B=2 bash -c \'echo "[$A][$B]"\'; echo "[${B-unset}]"', "[][2]\n[unset]\n"),
+        ("echo piped | env cat", "piped\n"),
+        ("env -- printf '%s\\n' ok", "ok\n"),
+    ],
+    ids=["plain_command", "changed_environment", "standard_input", "options_end"],
+)
+def test_env_runs_the_command_it_names(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that env runs a command with the environment it describes and leaves the shell's own alone"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected, 0)
+
+
+def test_env_reports_a_command_that_does_not_exist(shell: ShellHarness) -> None:
+    """Check that env naming an unknown command fails with the not-found code"""
+    run = shell.run("env nosuchcommand")
+
+    assert run.exit_code == EXIT_CODE_COMMAND_NOT_FOUND

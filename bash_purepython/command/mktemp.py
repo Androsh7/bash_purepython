@@ -79,17 +79,25 @@ class MktempCommand(Command):
                 state.write_error(f"mktemp: too few X's in template '{template}'\n")
             return CommandResult(stdout="", exit_code=EXIT_CODE_FAILURE)
         directory_text = self.directory_text(parsed, template, state.variables)
-        if directory_text is not None:
-            directory = state.resolve_path(directory_text)
-            directory.mkdir(parents=True, exist_ok=True)
+        if directory_text == DEFAULT_TEMPORARY_DIRECTORY:
+            state.resolve_path(directory_text).mkdir(parents=True, exist_ok=True)
+        kind = "directory" if parsed.directory else "file"
+        shown_template = (
+            template if directory_text is None else f"{directory_text.rstrip(PATH_SEPARATOR)}{PATH_SEPARATOR}{template}"
+        )
         for _ in range(MAXIMUM_ATTEMPTS):
-            name = fill_template(template)
-            shown = name if directory_text is None else f"{directory_text.rstrip(PATH_SEPARATOR)}{PATH_SEPARATOR}{name}"
-            path = state.resolve_path(shown)
-            if parsed.dry_run or self.create(path, parsed.directory):
+            shown = fill_template(shown_template)
+            try:
+                created = parsed.dry_run or self.create(state.resolve_path(shown), parsed.directory)
+            except OSError as error:
+                if not parsed.quiet:
+                    reason = error.strerror or str(error)
+                    state.write_error(f"mktemp: failed to create {kind} via template '{shown_template}': {reason}\n")
+                return CommandResult(stdout="", exit_code=EXIT_CODE_FAILURE)
+            if created:
                 return CommandResult(stdout=shown + "\n", exit_code=EXIT_CODE_SUCCESS)
         if not parsed.quiet:
-            state.write_error(f"mktemp: failed to create {'directory' if parsed.directory else 'file'} via template\n")
+            state.write_error(f"mktemp: failed to create {kind} via template '{shown_template}'\n")
         return CommandResult(stdout="", exit_code=EXIT_CODE_FAILURE)
 
     def directory_text(self, parsed: object, template: str, variables: dict[str, str]) -> str | None:
@@ -115,6 +123,9 @@ class MktempCommand(Command):
         Args:
             path: Where to create
             as_directory: Whether to create a directory rather than an empty file
+
+        Raises:
+            OSError: If the path cannot be created for any reason other than the name being taken
 
         Returns:
             True when created, False when the name was taken

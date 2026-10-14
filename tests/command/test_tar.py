@@ -47,15 +47,16 @@ def archive_names(archive_bytes: bytes) -> set[str]:
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
-        (["czf", "out.tgz", "dir"], ["-czf", "out.tgz", "dir"]),
+        (["czf", "out.tgz", "dir"], ["-c", "-z", "-f", "out.tgz", "dir"]),
+        (["cfz", "out.tgz", "dir"], ["-c", "-f", "out.tgz", "-z", "dir"]),
         (["-xzf", "in.tgz"], ["-xzf", "in.tgz"]),
         (["--create", "-f", "x"], ["--create", "-f", "x"]),
         (["dir"], ["dir"]),
     ],
-    ids=["bundled", "already dashed", "long options", "not a flag bundle"],
+    ids=["bundled", "file letter mid bundle", "already dashed", "long options", "not a flag bundle"],
 )
 def test_normalise_arguments_rewrites_only_a_bundled_first_argument(arguments: list[str], expected: list[str]) -> None:
-    """Check that an old-style flag bundle gains a dash and everything else is left alone"""
+    """Check that an old-style flag bundle is split into options and everything else is left alone"""
     assert normalise_arguments(arguments) == expected
 
 
@@ -157,3 +158,14 @@ def test_tar_reports_a_missing_archive_directory(shell: ShellHarness, source_tre
 
     assert run.exit_code == 2
     assert "nodir/out.tar" in run.stderr
+
+
+def test_tar_old_style_bundle_takes_the_archive_after_the_bundle(
+    shell: ShellHarness, tmp_path: Path, source_tree: None
+) -> None:
+    """Check that cvfz names the archive with the word after the bundle even though z follows f"""
+    run = shell.run("tar cvfz out.tgz project")
+
+    assert run.exit_code == 0
+    assert (tmp_path / "out.tgz").is_file()
+    assert not (tmp_path / "z").exists()

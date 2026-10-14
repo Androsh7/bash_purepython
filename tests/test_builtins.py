@@ -279,3 +279,96 @@ def test_read_with_an_empty_delimiter_reads_to_the_end(shell: ShellHarness) -> N
     run = shell.run("read -r -d '' v <<< $'line1\\nline2'; echo \"<$v>\"")
 
     assert run.stdout == "<line1\nline2>\n"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('set ""; echo $# "[$1]"', "1 []\n"),
+        ('empty=; set "$empty" b; echo $# "[$1]" "[$2]"', "2 [] [b]\n"),
+    ],
+    ids=["empty_argument", "empty_variable"],
+)
+def test_set_takes_an_empty_argument_as_a_positional_argument(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that set with an empty first argument sets the positional arguments"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected, 0)
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('a=(1 2 3); f() { declare -a a=(x y); }; f; echo "${a[@]}"', "1 2 3\n"),
+        ('a=(1 2); f() { local a; a[0]=z; }; f; echo "${a[@]}"', "1 2\n"),
+        ('x=5; f() { declare x; echo "[$x]"; }; f; echo "[$x]"', "[]\n[5]\n"),
+        ('a=(1 2); f() { declare -g -a a=(x); }; f; echo "${a[@]}"', "x\n"),
+    ],
+    ids=["declare_array", "local_then_element", "declare_without_value", "global"],
+)
+def test_declarations_in_a_function_leave_the_caller_unchanged(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that declare and local in a function make a fresh local the caller never sees"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'f() { local x=("a b" c "" "d\'e"); printf "<%s>" "${x[@]}"; }; f',
+        'declare -a x=("a b" c "" "d\'e"); printf "<%s>" "${x[@]}"',
+        'v="d\'e"; declare -a x=("a b" c "" "$v"); printf "<%s>" "${x[@]}"',
+    ],
+    ids=["local", "declare", "expanded_element"],
+)
+def test_array_literals_in_declarations_keep_quoted_elements_whole(shell: ShellHarness, script: str) -> None:
+    """Check that local and declare split an array literal into the same elements as a plain assignment"""
+    run = shell.run(script)
+
+    assert run.stdout == "<a b><c><><d'e>"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("read a b <<< 'x\\ y z'; echo \"[$a][$b]\"", "[x y][z]\n"),
+        ("read a <<< '  x\\  '; echo \"[$a]\"", "[x ]\n"),
+        ("IFS=: read a b <<< 'p\\:q:r'; echo \"[$a][$b]\"", "[p:q][r]\n"),
+        ("read -a w <<< 'x\\ y z'; echo ${#w[@]} \"${w[0]}\"", "2 x y\n"),
+        ("read -r a b <<< 'x\\ y z'; echo \"[$a][$b]\"", "[x\\][y z]\n"),
+    ],
+    ids=["escaped_space", "escaped_trailing_space", "escaped_separator", "array", "raw"],
+)
+def test_read_keeps_an_escaped_separator_inside_its_field(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that without -r a backslash-escaped IFS character does not split fields"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "readonly r=1; declare r=2",
+        "readonly r=1; f() { local r=2; }; f",
+        "readonly r=1; read r <<< x",
+        "readonly r=1; printf -v r %s x",
+        "readonly r=1; unset r",
+        "readonly r=1; export r=3",
+    ],
+    ids=["declare", "local", "read", "printf", "unset", "export"],
+)
+def test_readonly_variable_cannot_be_changed_by_any_builtin(shell: ShellHarness, script: str) -> None:
+    """Check that every builtin that sets or removes a variable refuses a readonly one"""
+    run = shell.run(f'{script}; echo "rc=$? r=$r"')
+
+    assert run.stdout == "rc=1 r=1\n"
+    assert "readonly variable" in run.stderr
+
+
+def test_readonly_takes_an_array_literal(shell: ShellHarness) -> None:
+    """Check that readonly name=(...) makes a readonly array rather than a string"""
+    run = shell.run('readonly a=(1 "2 3"); echo ${#a[@]} "${a[1]}"')
+
+    assert run.stdout == "2 2 3\n"

@@ -203,11 +203,27 @@ async def read_side(path_text: str, invocation: CommandInvocation) -> DiffSide |
         if not path.exists():
             invocation.state.write_error(f"diff: {path_text}: No such file or directory\n")
             return None
-        raw_lines = path.read_text(encoding=TEXT_ENCODING, errors="replace").splitlines(keepends=True)
+        raw_lines = split_newline_lines(path.read_text(encoding=TEXT_ENCODING, errors="replace"))
     missing_final_newline = bool(raw_lines) and not raw_lines[-1].endswith("\n")
     return DiffSide(
         label=path_text, lines=[line.rstrip("\n") for line in raw_lines], missing_final_newline=missing_final_newline
     )
+
+
+def split_newline_lines(text: str) -> list[str]:
+    """Return the lines of a text split only at newlines, each keeping its newline
+
+    Args:
+        text: The whole file
+
+    Returns:
+        The lines, the last one without a newline when the text does not end with one
+    """
+    pieces = text.split("\n")
+    lines = [f"{piece}\n" for piece in pieces[:-1]]
+    if pieces[-1]:
+        lines.append(pieces[-1])
+    return lines
 
 
 class DiffCommand(Command):

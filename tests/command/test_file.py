@@ -103,3 +103,14 @@ def test_file_reports_a_missing_path(shell: ShellHarness) -> None:
 
     assert run.exit_code == 1
     assert run.stdout == "missing: cannot open 'missing' (No such file or directory)\n"
+
+
+@pytest.mark.parametrize("header", [b"\x7fELF", b"\x7fELF\x02"], ids=["magic_only", "class_only"])
+def test_file_describes_a_truncated_elf_header(shell: ShellHarness, tmp_path: Path, header: bytes) -> None:
+    """Check that an ELF file too short to hold its class and byte order is described rather than crashing"""
+    (tmp_path / "short").write_bytes(header)
+
+    run = shell.run("file short")
+
+    assert run.exit_code == 0
+    assert run.stdout.startswith("short: ELF")

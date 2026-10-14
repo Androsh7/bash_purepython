@@ -19,7 +19,7 @@ from bash_purepython.shell_state import (
     ShellState,
 )
 from bash_purepython.streams import as_async_iterator, close_iterator, convert, materialise_text
-from bash_purepython.words import decode_ansi_c_escapes, expand_text, field_separators, split_fields
+from bash_purepython.words import decode_ansi_c_escapes, expand_text, field_separators
 
 if TYPE_CHECKING:
     from bash_purepython.execute_command import Executor, StdinValue
@@ -168,11 +168,15 @@ def parse_array_literal(value: str) -> dict[int, str] | None:
         value: The text after the equals sign of a declaration
 
     Returns:
-        The elements split on whitespace, indexed from zero, or None
+        The elements split as shell words, indexed from zero, or None when the value is not a well-formed literal
     """
     if not (value.startswith("(") and value.endswith(")")):
         return None
-    return dict(enumerate(value[1:-1].split()))
+    try:
+        elements = shlex.split(value[1:-1])
+    except ValueError:
+        return None
+    return dict(enumerate(elements))
 
 
 @dataclass
@@ -244,61 +248,82 @@ def parse_read_options(arguments: list[str]) -> ReadOptions | str:
     return options
 
 
-def unescape_read_line(text: str) -> str:
-    """Return a line read without ``-r`` with its backslash escapes removed
+def read_characters(text: str, raw: bool) -> list[tuple[str, bool]]:
+    """Return each character of a read line paired with whether a backslash protected it
+
+    Without ``-r`` a backslash is dropped and the character after it kept and protected from splitting, and a
+    backslash before a newline removes both
 
     Args:
         text: The raw line
+        raw: Whether ``-r`` was given, leaving backslashes as ordinary characters
 
     Returns:
-        The line with each backslash dropped and the character after it kept
+        The characters of the line, each with True when it was escaped
     """
-    pieces: list[str] = []
+    if raw:
+        return [(character, False) for character in text]
+    characters: list[tuple[str, bool]] = []
     index = 0
     while index < len(text):
         if text[index] == "\\" and index + 1 < len(text):
-            pieces.append(text[index + 1])
+            if text[index + 1] != "\n":
+                characters.append((text[index + 1], True))
             index += 2
         else:
-            pieces.append(text[index])
+            characters.append((text[index], False))
             index += 1
-    return "".join(pieces)
+    return characters
 
 
-def split_read_fields(text: str, separators: str, name_count: int) -> list[str]:
-    """Return the fields of a read line, the last one holding everything that remains
+def split_read_fields(characters: list[tuple[str, bool]], separators: str, limit: int | None) -> list[str]:
+    """Return the fields of a read line, the last one holding everything that remains when there is a limit
+
+    Escaped characters never separate fields. Surrounding ``IFS`` whitespace is dropped, and each separator is
+    a run of ``IFS`` whitespace around at most one other ``IFS`` character
 
     Args:
-        text: The line read
+        characters: The line's characters, each with whether it was escaped
         separators: The ``IFS`` characters
-        name_count: How many variables receive fields
+        limit: How many variables receive fields, or None to split the whole line as for ``-a``
 
     Returns:
-        Exactly ``name_count`` values, padded with empty strings
+        Exactly ``limit`` values padded with empty strings, or every field when there is no limit
     """
-    whitespace = "".join(character for character in separators if character in " \t\n")
-    text = text.strip(whitespace) if whitespace else text
+    whitespace = {character for character in separators if character in " \t\n"}
+
+    def is_whitespace(position: int) -> bool:
+        character, escaped = characters[position]
+        return not escaped and character in whitespace
+
+    def is_separator(position: int) -> bool:
+        character, escaped = characters[position]
+        return not escaped and character in separators
+
+    start = 0
+    end = len(characters)
+    while start < end and is_whitespace(start):
+        start += 1
+    while end > start and is_whitespace(end - 1):
+        end -= 1
     fields: list[str] = []
-    remaining = text
-    while len(fields) < name_count - 1 and remaining:
-        tokens = split_fields(remaining, separators)
-        fields.append(tokens[0] or "")
-        if len(tokens) == 1:
-            remaining = ""
-            break
-        consumed = len(fields[-1])
-        rest = remaining[consumed:]
-        separator_run = 0
-        seen_non_whitespace = False
-        while separator_run < len(rest) and rest[separator_run] in separators:
-            if rest[separator_run] not in whitespace:
-                if seen_non_whitespace:
-                    break
-                seen_non_whitespace = True
-            separator_run += 1
-        remaining = rest[separator_run:]
-    fields.append(remaining.strip(whitespace) if whitespace else remaining)
-    return (fields + [""] * name_count)[:name_count]
+    position = start
+    while position < end and (limit is None or len(fields) < limit - 1):
+        field_start = position
+        while position < end and not is_separator(position):
+            position += 1
+        fields.append("".join(character for character, _ in characters[field_start:position]))
+        while position < end and is_whitespace(position):
+            position += 1
+        if position < end and is_separator(position):
+            position += 1
+            while position < end and is_whitespace(position):
+                position += 1
+    if limit is None:
+        return fields
+    if position < end or len(fields) < limit:
+        fields.append("".join(character for character, _ in characters[position:end]))
+    return (fields + [""] * limit)[:limit]
 
 
 @dataclass
@@ -466,23 +491,25 @@ class ShellBuiltins:
         if isinstance(options, str):
             state.write_error(f"bash: {options}\n")
             return EXIT_CODE_USAGE_ERROR
+        targets = [options.array_name] if options.array_name is not None else options.names
+        for name in targets or [DEFAULT_READ_VARIABLE_NAME]:
+            if name in state.readonly_names:
+                state.write_error(f"bash: {name}: readonly variable\n")
+                return EXIT_CODE_FAILURE
         line = await self.read_record(options, stdin, state)
         if line is None:
             return EXIT_CODE_FAILURE
         text, finished = line
-        if not options.raw:
-            text = unescape_read_line(text)
+        characters = read_characters(text, options.raw)
         separators = field_separators(state)
         if options.array_name is not None:
-            tokens = [token for token in split_fields(text, separators) if token is not None]
-            if tokens == [""]:
-                tokens = []
             state.variables.pop(options.array_name, None)
-            state.arrays[options.array_name] = dict(enumerate(tokens))
+            state.arrays[options.array_name] = dict(enumerate(split_read_fields(characters, separators, None)))
         elif not options.names:
-            self.assign(DEFAULT_READ_VARIABLE_NAME, text, state)
+            self.assign(DEFAULT_READ_VARIABLE_NAME, "".join(character for character, _ in characters), state)
         else:
-            for name, value in zip(options.names, split_read_fields(text, separators, len(options.names)), strict=True):
+            values = split_read_fields(characters, separators, len(options.names))
+            for name, value in zip(options.names, values, strict=True):
                 self.assign(name, value, state)
         return EXIT_CODE_SUCCESS if finished else EXIT_CODE_FAILURE
 
@@ -622,7 +649,7 @@ class ShellBuiltins:
             if argument == "--":
                 state.positional_arguments = arguments[index + 1 :]
                 return EXIT_CODE_SUCCESS
-            if argument in ("-", "+") or argument[0] not in "-+" or len(argument) < 2:
+            if argument in ("-", "+") or not argument.startswith(("-", "+")):
                 state.positional_arguments = arguments[index:]
                 return EXIT_CODE_SUCCESS
             enable = argument[0] == "-"
@@ -679,12 +706,13 @@ class ShellBuiltins:
             state: The shell state holding the function's scope
 
         Returns:
-            Zero, or one outside any function
+            Zero, or one outside any function or when a name is readonly
         """
         if not state.local_scopes:
             state.write_error("bash: local: can only be used in a function\n")
             return EXIT_CODE_FAILURE
         make_array = False
+        exit_code = EXIT_CODE_SUCCESS
         for argument in arguments:
             if argument.startswith("-"):
                 make_array = "a" in argument
@@ -693,6 +721,10 @@ class ShellBuiltins:
             if NAME_PATTERN.match(name) is None:
                 state.write_error(f"bash: local: `{argument}': not a valid identifier\n")
                 return EXIT_CODE_FAILURE
+            if name in state.readonly_names:
+                state.write_error(f"bash: local: {name}: readonly variable\n")
+                exit_code = EXIT_CODE_FAILURE
+                continue
             self.remember_outer_value(name, state)
             elements = parse_array_literal(value) if separator else None
             if make_array or elements is not None:
@@ -707,7 +739,7 @@ class ShellBuiltins:
             else:
                 state.variables.pop(name, None)
                 state.arrays.pop(name, None)
-        return EXIT_CODE_SUCCESS
+        return exit_code
 
     def remember_outer_value(self, name: str, state: ShellState) -> None:
         """Record a variable's value from before the function changed it, once per scope
@@ -718,7 +750,8 @@ class ShellBuiltins:
         """
         scope = state.local_scopes[-1]
         if name not in scope:
-            scope[name] = (state.variables.get(name), state.arrays.get(name))
+            elements = state.arrays.get(name)
+            scope[name] = (state.variables.get(name), None if elements is None else dict(elements))
 
     async def eval(self, arguments: list[str], stdin: "StdinValue | None", state: ShellState) -> int:
         """Run the arguments joined by spaces as a script
@@ -1020,8 +1053,15 @@ class ShellBuiltins:
                 state.write_error(f"bash: declare: `{argument}': not a valid identifier\n")
                 exit_code = EXIT_CODE_FAILURE
                 continue
-            if state.local_scopes and "g" not in attributes:
+            creates_local = bool(state.local_scopes) and "g" not in attributes and name not in state.local_scopes[-1]
+            if name in state.readonly_names and (separator or creates_local):
+                state.write_error(f"bash: declare: {name}: readonly variable\n")
+                exit_code = EXIT_CODE_FAILURE
+                continue
+            if creates_local:
                 self.remember_outer_value(name, state)
+                state.variables.pop(name, None)
+                state.arrays.pop(name, None)
             if "i" in attributes and separator:
                 expanded = await expand_text(
                     value, state, self.executor.substitution_runner(state), in_double_quotes=False
@@ -1129,7 +1169,13 @@ class ShellBuiltins:
                 if name in state.readonly_names:
                     state.write_error(f"bash: readonly: {name}: readonly variable\n")
                     return EXIT_CODE_FAILURE
-                state.variables[name] = value
+                elements = parse_array_literal(value)
+                if elements is not None:
+                    state.variables.pop(name, None)
+                    state.arrays[name] = elements
+                else:
+                    state.arrays.pop(name, None)
+                    state.variables[name] = value
             state.readonly_names.add(name)
         return EXIT_CODE_SUCCESS
 

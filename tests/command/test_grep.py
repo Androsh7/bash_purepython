@@ -255,3 +255,33 @@ def test_grep_uses_posix_regex_dialects(shell: ShellHarness, script: str, expect
 
     assert run.stdout == expected
     assert run.exit_code == exit_code
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("printf 'a\\n-1\\nb\\n' | grep -e -1", "-1\n"),
+        ("printf 'a\\n-foo\\n' | grep -e -foo", "-foo\n"),
+        ("printf 'a\\n-1\\n' | grep --regexp -1", "-1\n"),
+    ],
+    ids=["number", "word", "long_option"],
+)
+def test_grep_takes_a_dash_value_after_an_option_that_needs_one(
+    shell: ShellHarness, script: str, expected: str
+) -> None:
+    """Check that the value after -e is the pattern even when it looks like an option or the -NUM shorthand"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected, 0)
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["seq 10 | grep -C 3 -A 1 5", "seq 10 | grep -A 1 -C 3 5"],
+    ids=["context_first", "after_first"],
+)
+def test_grep_explicit_after_context_wins_over_context(shell: ShellHarness, script: str) -> None:
+    """Check that -A sets the trailing context whatever the order of -C"""
+    run = shell.run(script)
+
+    assert run.stdout.split() == ["2", "3", "4", "5", "6"]

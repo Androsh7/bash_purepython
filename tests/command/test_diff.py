@@ -125,3 +125,10 @@ def test_diff_requires_two_files(shell: ShellHarness) -> None:
     run = shell.run("diff a")
 
     assert run.exit_code == 2
+
+
+def test_diff_splits_lines_only_at_newlines(shell: ShellHarness) -> None:
+    """Check that form feeds and vertical tabs stay inside a line rather than starting a new one"""
+    run = shell.run("printf 'a\\fb\\nc\\n' > x; printf 'a\\vb\\n' > y; diff x y")
+
+    assert (run.stdout, run.exit_code) == ("1,2c1\n< a\fb\n< c\n---\n> a\vb\n", 1)

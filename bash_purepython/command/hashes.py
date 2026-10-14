@@ -12,6 +12,7 @@ from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, Sh
 from bash_purepython.streams import TEXT_ENCODING
 
 STDIN_PATH = "-"
+STDIN_LABEL = "'standard input'"
 CHECKSUM_SEPARATOR = "  "
 CHECK_LINE_FIELD_COUNT = 2
 BINARY_MARKER = "*"
@@ -84,9 +85,9 @@ class HashCommand(Command):
                 exit_code = EXIT_CODE_FAILURE
                 continue
             if parsed.check:
-                exit_code = max(
-                    exit_code, self.check(data.decode(TEXT_ENCODING, errors="replace"), lines, invocation.state)
-                )
+                label = STDIN_LABEL if path_text == STDIN_PATH else path_text
+                checksum_text = data.decode(TEXT_ENCODING, errors="replace")
+                exit_code = max(exit_code, self.check(checksum_text, label, lines, invocation.state))
             else:
                 lines.append(f"{digest_hex(self.algorithm, data)}{CHECKSUM_SEPARATOR}{path_text}\n")
         return CommandResult(stdout="".join(lines), exit_code=exit_code)
@@ -112,23 +113,28 @@ class HashCommand(Command):
             return None
         return path.read_bytes()
 
-    def check(self, checksum_text: str, lines: list[str], state: ShellState) -> int:
+    def check(self, checksum_text: str, label: str, lines: list[str], state: ShellState) -> int:
         """Verify every ``<hex>  <name>`` line, appending ``name: OK`` or ``name: FAILED`` for each
 
         Args:
             checksum_text: The contents of a checksum file
+            label: The checksum file's name as reported in errors
             lines: Where the verdict lines go
             state: The shell state for resolving names and reporting the summary
 
         Returns:
-            Zero when every file matched, one otherwise
+            Zero when every file matched, one when any failed or the file held no checksum line at all
         """
         failed = 0
         missing = 0
+        improper = 0
+        checked = 0
         for line in checksum_text.splitlines():
             parsed_line = parse_check_line(line)
             if parsed_line is None:
+                improper += 1
                 continue
+            checked += 1
             expected, name = parsed_line
             path = state.resolve_path(name)
             if not path.is_file():
@@ -141,6 +147,14 @@ class HashCommand(Command):
             else:
                 lines.append(f"{name}: FAILED\n")
                 failed += 1
+        if not checked:
+            state.write_error(
+                f"{self.name}: {label}: no properly formatted {self.algorithm.upper()} checksum lines found\n"
+            )
+            return EXIT_CODE_FAILURE
+        if improper:
+            described = "1 line is" if improper == 1 else f"{improper} lines are"
+            state.write_error(f"{self.name}: WARNING: {described} improperly formatted\n")
         if missing:
             state.write_error(f"{self.name}: WARNING: {missing} listed file could not be read\n")
         if failed:
