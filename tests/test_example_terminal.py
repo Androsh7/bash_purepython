@@ -6,12 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Third-party libraries
-import pytest
-
-# Project libraries
-from examples.terminal import needs_more_lines
-
 REPOSITORY_ROOT = Path(__file__).parent.parent
 TERMINAL_TIMEOUT_S = 30
 
@@ -86,29 +80,9 @@ def test_terminal_shows_the_directory_in_its_prompt(tmp_path: Path) -> None:
     assert "inner$ " in session.stdout
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("echo done", False),
-        ("echo 'closed'", False),
-        ("echo 'open", True),
-        ('echo "open', True),
-        ("cat << EOF", True),
-        ("cat << EOF\nline", True),
-        ("cat << EOF\nline\nEOF", False),
-        ("echo one \\", True),
-    ],
-    ids=[
-        "plain",
-        "closed_quote",
-        "open_single_quote",
-        "open_double_quote",
-        "heredoc_opened",
-        "heredoc_body",
-        "heredoc_closed",
-        "trailing_backslash",
-    ],
-)
-def test_needs_more_lines_detects_unfinished_input(text: str, expected: bool) -> None:
-    """Check which inputs make the terminal ask for another line"""
-    assert needs_more_lines(text) is expected
+def test_terminal_reads_a_loop_typed_over_several_lines(tmp_path: Path) -> None:
+    """Check that a for loop typed one line at a time runs once its done arrives"""
+    session = run_terminal_session("for n in 1 2\ndo\necho got $n\ndone\n", tmp_path)
+
+    assert session.stdout.count("> ") >= 3
+    assert "got 1\ngot 2\n" in session.stdout.replace("\r\n", "\n")

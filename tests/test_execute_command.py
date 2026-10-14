@@ -357,7 +357,7 @@ def test_append_redirection_keeps_existing_content(shell: ShellHarness, tmp_path
 
 def test_read_redirection_feeds_the_command(shell: ShellHarness, tmp_path: Path) -> None:
     """Check that < supplies the file as standard input"""
-    (tmp_path / "in.txt").write_text("from file\n", encoding="utf-8")
+    (tmp_path / "in.txt").write_text("from file\n", encoding="utf-8", newline="\n")
 
     run = shell.run("cat < in.txt")
 
@@ -689,3 +689,31 @@ def test_async_output_sink_receives_chunks(tmp_path: Path) -> None:
     asyncio.run(Executor().run_script_async("yes | head -n 2; echo done", state))
 
     assert received == ["y\n", "y\n", "done\n"]
+
+
+def test_stdout_to_stderr_sends_output_to_the_error_sink(shell: ShellHarness) -> None:
+    """Check that >&2 moves a command's output to standard error and 1>&2 does the same"""
+    run = shell.run("echo a; echo b >&2; echo c 1>&2")
+
+    assert (run.stdout, run.stderr) == ("a\n", "b\nc\n")
+
+
+def test_stdout_to_stderr_follows_a_redirected_error_stream(shell: ShellHarness) -> None:
+    """Check that output sent to standard error lands where the enclosing command sent its errors"""
+    run = shell.run("f() { echo fn >&2; }; f 2>&1 | cat; ( echo in >&2 ) 2>err.txt; cat err.txt")
+
+    assert (run.stdout, run.stderr) == ("fn\nin\n", "")
+
+
+def test_closing_a_descriptor_discards_its_output(shell: ShellHarness) -> None:
+    """Check that >&- and 2>&- drop the stream while >&1 and 2>&2 change nothing"""
+    run = shell.run("echo x >&-; cat nope 2>&-; echo y >&1; echo z 2>&2")
+
+    assert (run.stdout, run.stderr) == ("y\nz\n", "")
+
+
+def test_heredoc_inside_a_command_substitution_feeds_the_inner_command(shell: ShellHarness) -> None:
+    """Check that a here-document written inside $( ) belongs to the command in the substitution"""
+    run = shell.run("x=$(cat <<EOF\nhello\nEOF\n); echo $x; echo $(cat <<EOF | rev\nabc\nEOF\n) after")
+
+    assert (run.stdout, run.stderr) == ("hello\ncba after\n", "")

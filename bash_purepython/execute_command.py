@@ -3,7 +3,9 @@
 # Standard libraries
 import asyncio
 import dataclasses
+import fnmatch
 import inspect
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from bash_purepython.command.command import Command, CommandInvocation, ExitStat
 from bash_purepython.command.registry import CommandRegistry
 from bash_purepython.conditional import conditional_body, evaluate_conditional
 from bash_purepython.parse_script import split_script_into_connected_commands
+from bash_purepython.shell_builtins import BUILTIN_SUMMARIES, ShellBuiltins
 from bash_purepython.shell_state import (
     EXIT_CODE_BROKEN_PIPE,
     EXIT_CODE_COMMAND_NOT_FOUND,
@@ -43,8 +46,10 @@ from bash_purepython.shell_state import (
     PipeSink,
     ReturnFromFunction,
     ShellError,
+    ShellOption,
     ShellState,
     ShellSyntaxError,
+    UnboundVariableError,
 )
 from bash_purepython.streams import (
     KIND_PREFERENCE,
@@ -57,16 +62,25 @@ from bash_purepython.streams import (
     materialise_text,
 )
 from bash_purepython.words import (
+    Assignment,
+    QuoteStyle,
+    RunSubstitution,
+    Word,
+    array_elements,
     expand_raw_word,
     expand_text,
+    expand_word_as_pattern,
     expand_word_unsplit,
     expand_words,
+    resolve_array_index,
     tokenize_simple_command,
 )
 from bash_purepython.workflow import (
     AndOrListNode,
     BackgroundNode,
     BraceGroupNode,
+    CaseNode,
+    CaseTerminator,
     ForNode,
     FunctionDefinitionNode,
     IfNode,
@@ -89,18 +103,38 @@ SHELL_COMMAND_NAMES = frozenset({"bash", "sh"})
 SOURCE_COMMAND_NAMES = frozenset({"source", "."})
 SCRIPT_COMMAND_NAMES = SHELL_COMMAND_NAMES | SOURCE_COMMAND_NAMES
 INLINE_SCRIPT_OPTION = "-c"
+ARRAY_ELEMENT_PATTERN = re.compile(r"^([A-Za-z_]\w*)\[(.+)\]$")
 PATH_SEPARATOR = "/"
 EXIT_CODE_NOT_EXECUTABLE = 126
+EXIT_CODE_UNBOUND_VARIABLE = 127
 DEFAULT_OUTPUT_LIMIT_CHARACTERS = 16 << 20
 OUTPUT_REDIRECTION_KINDS = frozenset(
-    {RedirectionKind.WRITE_STDOUT, RedirectionKind.APPEND_STDOUT, RedirectionKind.WRITE_BOTH}
+    {
+        RedirectionKind.WRITE_STDOUT,
+        RedirectionKind.APPEND_STDOUT,
+        RedirectionKind.WRITE_BOTH,
+        RedirectionKind.STDOUT_TO_STDERR,
+    }
 )
-JOB_STATUS_WORDS = {JobStatus.RUNNING: "Running", JobStatus.DONE: "Done", JobStatus.KILLED: "Killed"}
-
-
-OUTPUT_REDIRECTION_KINDS = frozenset(
-    {RedirectionKind.WRITE_STDOUT, RedirectionKind.APPEND_STDOUT, RedirectionKind.WRITE_BOTH}
-)
+JOB_STATUS_WORDS = {JobStatus.RUNNING: "Running", JobStatus.DONE: "Done", JobStatus.KILLED: "Terminated"}
+CORE_BUILTIN_SUMMARIES = {
+    "cd": "change the working directory",
+    "export": "mark variables for export to commands",
+    "unset": "remove variables and functions",
+    "exit": "leave the shell with an exit code",
+    "return": "leave a function with an exit code",
+    "break": "leave the innermost loop",
+    "continue": "start the next iteration of the innermost loop",
+    "wait": "wait for background jobs to finish",
+    "jobs": "list the background jobs",
+    ":": "do nothing, successfully",
+    "bash": "run a script file, -c text, or standard input",
+    "sh": "run a script file, -c text, or standard input",
+    "source": "run a file in the current shell",
+    ".": "run a file in the current shell",
+}
+JOB_STATUS_COLUMN_WIDTH = 24
+XTRACE_PREFIX = "+ "
 
 
 class ErrorDestination(StrEnum):
@@ -138,6 +172,7 @@ class ExecutionResult:
         self.stdout = stdout
         self.kind = kind
         self._exit_code = exit_code
+        self.exempt_from_errexit = False
 
     @property
     def exit_code(self) -> int:
@@ -158,6 +193,26 @@ class ExecutionResult:
     def as_stdin(self) -> StdinValue:
         """Return the output shaped as the next command's standard input"""
         return StdinValue(value=self.stdout, kind=self.kind)
+
+
+class PipelineResult(ExecutionResult):
+    """Hold a pipeline's output with the exit code of its last failing stage, as ``pipefail`` reports it"""
+
+    def __init__(self, last: ExecutionResult, stage_results: list[ExecutionResult]):
+        """Wrap the last stage's result
+
+        Args:
+            last: The last stage's result, whose output is the pipeline's
+            stage_results: Every stage's result in order
+        """
+        super().__init__(stdout=last.stdout, kind=last.kind, exit_code=last.exit_code)
+        self.stage_results = stage_results
+
+    @property
+    def exit_code(self) -> int:
+        """Return the exit code of the last stage that failed, or zero when every stage succeeded"""
+        failures = [result.exit_code for result in self.stage_results if result.exit_code != EXIT_CODE_SUCCESS]
+        return failures[-1] if failures else EXIT_CODE_SUCCESS
 
 
 class SubstitutionRunner:
@@ -290,6 +345,12 @@ class Executor:
             "jobs": self.builtin_jobs,
             NO_OP_BUILTIN_NAME: self.builtin_no_op,
         }
+        self.builtins.update(ShellBuiltins(self).table())
+        self.script_command_names = SCRIPT_COMMAND_NAMES
+
+    def builtin_summaries(self) -> dict[str, str]:
+        """Return a one-line summary for every builtin and script command, for help listings"""
+        return {**CORE_BUILTIN_SUMMARIES, **BUILTIN_SUMMARIES}
 
     async def execute_script(self, script: str, state: ShellState) -> int:
         """Run a whole script as the outermost entry point, so exit stops it and stray signals are swallowed
@@ -343,13 +404,22 @@ class Executor:
                 return state.last_exit_code
             except ExpansionError as error:
                 state.write_error(f"bash: {error}\n")
-                state.last_exit_code = EXIT_CODE_FAILURE
+                state.last_exit_code = (
+                    EXIT_CODE_UNBOUND_VARIABLE if isinstance(error, UnboundVariableError) else EXIT_CODE_FAILURE
+                )
                 return state.last_exit_code
             except ShellError as error:
                 state.write_error(f"bash: {error}\n")
                 state.last_exit_code = EXIT_CODE_FAILURE
                 continue
             state.last_exit_code = result.exit_code
+            if (
+                ShellOption.ERREXIT in state.options
+                and result.exit_code != EXIT_CODE_SUCCESS
+                and state.condition_depth == 0
+                and not result.exempt_from_errexit
+            ):
+                raise ExitShell(result.exit_code)
         return state.last_exit_code
 
     async def run_subshell_script(self, script: str, state: ShellState) -> int:
@@ -478,6 +548,8 @@ class Executor:
             return (lambda inner: self.run_if(node, inner)), state, node.redirections
         if isinstance(node, ForNode):
             return (lambda inner: self.run_for(node, inner)), state, node.redirections
+        if isinstance(node, CaseNode):
+            return (lambda inner: self.run_case(node, inner)), state, node.redirections
         if isinstance(node, WhileNode | UntilNode):
             return (lambda inner: self.run_while(node, inner)), state, node.redirections
         raise ShellSyntaxError(f"unknown plan node: {node}")
@@ -640,10 +712,12 @@ class Executor:
         """
         result: ExecutionResult | None = None
         upstream: TextStream | None = None
+        stage_results: list[ExecutionResult] = []
         for index, stage in enumerate(node.stages):
             stage_stdin = stdin if result is None else result.as_stdin()
             merge_stderr = index < len(node.merge_stderr) and node.merge_stderr[index]
             result = await self.execute_stage(stage, state, stage_stdin, merge_stderr)
+            stage_results.append(result)
             if isinstance(result.stdout, TextStream):
                 result.stdout.upstream = upstream
                 upstream = result.stdout
@@ -652,11 +726,15 @@ class Executor:
                 upstream = None
         if result is None:
             raise ShellSyntaxError("empty pipeline")
+        if ShellOption.PIPEFAIL in state.options and len(stage_results) > 1:
+            result = PipelineResult(result, stage_results)
         if not node.negated:
             return result
         text = await materialise_text(result.stdout, result.kind)
         exit_code = EXIT_CODE_FAILURE if result.exit_code == EXIT_CODE_SUCCESS else EXIT_CODE_SUCCESS
-        return ExecutionResult(stdout=text, kind=OutputKind.TEXT, exit_code=exit_code)
+        negated_result = ExecutionResult(stdout=text, kind=OutputKind.TEXT, exit_code=exit_code)
+        negated_result.exempt_from_errexit = True
+        return negated_result
 
     async def execute_stage(
         self, stage: PlanNode, state: ShellState, stdin: StdinValue | None, merge_stderr: bool
@@ -706,15 +784,31 @@ class Executor:
             An empty result carrying the exit code of the last pipeline that ran, or the captured text
         """
         collector = CollectingSink(self.output_limit_characters)
+        ran_last_item = True
         with redirected_sinks(state, output_sink=None if direct_output else collector):
-            exit_code = await self.run_and_drain(node.first, state, stdin)
-            for operator, item in node.rest:
-                should_run = (exit_code == EXIT_CODE_SUCCESS) == (operator == ListOperator.AND)
-                if should_run:
-                    exit_code = await self.run_and_drain(item, state, None)
+            state.condition_depth += 1
+            try:
+                exit_code = await self.run_and_drain(node.first, state, stdin)
+                for position, (operator, item) in enumerate(node.rest):
+                    should_run = (exit_code == EXIT_CODE_SUCCESS) == (operator == ListOperator.AND)
+                    ran_last_item = should_run
+                    if not should_run:
+                        continue
+                    if position == len(node.rest) - 1:
+                        state.condition_depth -= 1
+                    try:
+                        exit_code = await self.run_and_drain(item, state, None)
+                    finally:
+                        if position == len(node.rest) - 1:
+                            state.condition_depth += 1
+            finally:
+                state.condition_depth -= 1
         if direct_output:
-            return ExecutionResult.empty(exit_code)
-        return ExecutionResult(stdout=collector.text(), kind=OutputKind.TEXT, exit_code=exit_code)
+            result = ExecutionResult.empty(exit_code)
+        else:
+            result = ExecutionResult(stdout=collector.text(), kind=OutputKind.TEXT, exit_code=exit_code)
+        result.exempt_from_errexit = not ran_last_item
+        return result
 
     async def run_and_drain(self, node: PlanNode, state: ShellState, stdin: StdinValue | None) -> int:
         """Run a node, write its output to the sink, and record its exit code
@@ -743,14 +837,85 @@ class Executor:
             The exit code of the body that ran, or zero when none did
         """
         for condition, body in node.branches:
-            if await self.run_script(condition, state) == EXIT_CODE_SUCCESS:
+            if await self.run_condition(condition, state) == EXIT_CODE_SUCCESS:
                 return await self.run_script(body, state)
         if node.else_body is not None:
             return await self.run_script(node.else_body, state)
         return EXIT_CODE_SUCCESS
 
+    async def run_case(self, node: CaseNode, state: ShellState) -> int:
+        """Run the bodies of the case clauses whose patterns match the word
+
+        Args:
+            node: The case statement
+            state: The shell state to run against
+
+        Raises:
+            ShellSyntaxError: If the tested word or a pattern is not a single word
+
+        Returns:
+            The exit code of the last body run, or zero when no pattern matched
+        """
+        run_substitution = self.substitution_runner(state)
+        word = await expand_raw_word(node.word_text, state, run_substitution)
+        exit_code = EXIT_CODE_SUCCESS
+        fall_through = False
+        for clause in node.clauses:
+            if not fall_through:
+                matched = False
+                for pattern_text in split_case_patterns(clause.patterns_text):
+                    words, redirections, assignments = tokenize_simple_command(pattern_text)
+                    if len(words) != 1 or redirections or assignments:
+                        raise ShellSyntaxError(f"bad case pattern: {pattern_text}")
+                    pattern = await expand_word_as_pattern(words[0], state, run_substitution)
+                    if fnmatch.fnmatchcase(word, pattern):
+                        matched = True
+                        break
+                if not matched:
+                    continue
+            exit_code = await self.run_script(clause.body, state) if clause.body else EXIT_CODE_SUCCESS
+            fall_through = clause.terminator == CaseTerminator.FALL_THROUGH
+            if clause.terminator == CaseTerminator.STOP:
+                return exit_code
+        return exit_code
+
+    async def run_arithmetic_for(self, node: ForNode, state: ShellState) -> int:
+        """Run a ``for (( initial; condition; step ))`` loop
+
+        Args:
+            node: The for loop, whose ``arithmetic`` holds the three expressions
+            state: The shell state to run against
+
+        Returns:
+            The exit code of the last body run, or zero when the loop never ran
+        """
+        initial, condition, step = node.arithmetic or ("", "", "")
+        run_substitution = self.substitution_runner(state)
+
+        async def evaluate(expression: str) -> int:
+            if not expression.strip():
+                return 1
+            expanded = await expand_text(expression, state, run_substitution, in_double_quotes=False)
+            return evaluate_arithmetic(expanded, state)
+
+        exit_code = EXIT_CODE_SUCCESS
+        await evaluate(initial)
+        state.loop_depth += 1
+        try:
+            while await evaluate(condition) != 0:
+                try:
+                    exit_code = await self.run_script(node.body, state)
+                except BreakLoop:
+                    break
+                except ContinueLoop:
+                    pass
+                await evaluate(step)
+        finally:
+            state.loop_depth -= 1
+        return exit_code
+
     async def run_for(self, node: ForNode, state: ShellState) -> int:
-        """Run a for loop over its expanded words, or over the positional arguments
+        """Run a for loop over its expanded words, over the positional arguments, or arithmetically
 
         Args:
             node: The for loop
@@ -759,6 +924,8 @@ class Executor:
         Returns:
             The exit code of the last body run, or zero when the loop never ran
         """
+        if node.arithmetic is not None:
+            return await self.run_arithmetic_for(node, state)
         if node.words_text is None:
             values = list(state.positional_arguments)
         else:
@@ -781,6 +948,22 @@ class Executor:
             state.loop_depth -= 1
         return exit_code
 
+    async def run_condition(self, script: str, state: ShellState) -> int:
+        """Run the condition of an if or loop, where a failure must not stop the shell under errexit
+
+        Args:
+            script: The condition text
+            state: The shell state to run against
+
+        Returns:
+            The condition's exit code
+        """
+        state.condition_depth += 1
+        try:
+            return await self.run_script(script, state)
+        finally:
+            state.condition_depth -= 1
+
     async def run_while(self, node: WhileNode | UntilNode, state: ShellState) -> int:
         """Run a while or until loop
 
@@ -796,7 +979,7 @@ class Executor:
         state.loop_depth += 1
         try:
             while True:
-                condition_succeeded = await self.run_script(node.condition, state) == EXIT_CODE_SUCCESS
+                condition_succeeded = await self.run_condition(node.condition, state) == EXIT_CODE_SUCCESS
                 if condition_succeeded != run_while_condition_succeeds:
                     return exit_code
                 try:
@@ -835,19 +1018,28 @@ class Executor:
                 await self.discard_stdin(stdin)
             truth = await evaluate_conditional(condition, state, run_substitution)
             return ExecutionResult.empty(EXIT_CODE_SUCCESS if truth else EXIT_CODE_FAILURE)
-        words, redirections, assignments = tokenize_simple_command(node.text)
+        words, redirections, assignments = self.expand_aliases(*tokenize_simple_command(node.text), state)
         arguments = await expand_words(words, state, run_substitution)
+        if ShellOption.XTRACE in state.options:
+            traced = [trace_assignment(assignment) for assignment in assignments]
+            state.write_error(XTRACE_PREFIX + " ".join(traced + arguments) + "\n")
         if not arguments:
             for assignment in assignments:
-                state.variables[assignment.name] = await expand_word_unsplit(assignment.value, state, run_substitution)
+                await self.apply_assignment(assignment, state, run_substitution)
             exit_code = run_substitution.last_exit_code
             return ExecutionResult.empty(EXIT_CODE_SUCCESS if exit_code is None else exit_code)
         saved_variables = {assignment.name: state.variables.get(assignment.name) for assignment in assignments}
         for assignment in assignments:
-            state.variables[assignment.name] = await expand_word_unsplit(assignment.value, state, run_substitution)
+            await self.apply_assignment(assignment, state, run_substitution)
         error_destination = await self.error_destination(redirections, state, merge_stderr)
         try:
             stdin = await self.apply_input_redirections(stdin, redirections, state)
+            builtin = self.builtins.get(arguments[0]) if arguments[0] not in state.functions else None
+            has_output_redirection = any(redirection.kind in OUTPUT_REDIRECTION_KINDS for redirection in redirections)
+            if builtin is not None and (in_pipeline or has_output_redirection):
+                return await self.run_builtin_as_compound(
+                    builtin, arguments[1:], stdin, redirections, state, in_pipeline, merge_stderr, error_destination
+                )
             attached_to_terminal = (
                 not in_pipeline
                 and error_destination == ErrorDestination.STDERR
@@ -863,7 +1055,169 @@ class Executor:
                     state.variables.pop(name, None)
                 else:
                     state.variables[name] = value
-        return await self.apply_output_redirections(result, redirections, state, error_destination)
+        return await self.apply_output_redirections(result, redirections, state, error_destination, merge_stderr)
+
+    async def run_builtin_as_compound(
+        self,
+        builtin: Builtin,
+        arguments: list[str],
+        stdin: StdinValue | None,
+        redirections: list[Redirection],
+        state: ShellState,
+        in_pipeline: bool,
+        merge_stderr: bool,
+        error_destination: "ErrorDestination | Path",
+    ) -> ExecutionResult:
+        """Run a builtin whose output is piped or redirected, the way a compound command is
+
+        A pipeline stage runs against a copy of the state, as bash runs it in a subshell
+
+        Args:
+            builtin: The builtin to run
+            arguments: Its arguments
+            stdin: Standard input after input redirections, or None
+            redirections: The command's redirections
+            state: The shell state to run against
+            in_pipeline: Whether the builtin is a pipeline stage
+            merge_stderr: Whether its error output joins its standard output
+            error_destination: Where its error output goes
+
+        Returns:
+            The builtin's output and exit code
+        """
+        output_redirections = [
+            redirection for redirection in redirections if redirection.kind in OUTPUT_REDIRECTION_KINDS
+        ]
+
+        async def body(inner: ShellState) -> int:
+            return await builtin(arguments, None, inner)
+
+        if in_pipeline:
+            return await self.stream_compound(
+                body, state.copy(), stdin, output_redirections, merge_stderr, error_destination=error_destination
+            )
+        return await self.execute_compound(
+            body, state, stdin, output_redirections, direct_output=True, error_destination=error_destination
+        )
+
+    def expand_aliases(
+        self,
+        words: list[Word],
+        redirections: list[Redirection],
+        assignments: list[Assignment],
+        state: ShellState,
+    ) -> tuple[list[Word], list[Redirection], list[Assignment]]:
+        """Replace an alias in the command position with the words it stands for, repeating for a new alias
+
+        Args:
+            words: The command's words
+            redirections: The command's redirections
+            assignments: The assignments before the command name
+            state: The shell state holding the aliases
+
+        Returns:
+            The words, redirections and assignments after alias expansion
+        """
+        seen: set[str] = set()
+        while words and len(words[0].parts) == 1 and words[0].parts[0].quote == QuoteStyle.NONE:
+            name = words[0].parts[0].text
+            if name not in state.aliases or name in seen:
+                break
+            seen.add(name)
+            alias_words, alias_redirections, alias_assignments = tokenize_simple_command(state.aliases[name])
+            words = [*alias_words, *words[1:]]
+            redirections = [*alias_redirections, *redirections]
+            assignments = [*assignments, *alias_assignments]
+        return words, redirections, assignments
+
+    def stdin_value(self, value: Any, kind: OutputKind) -> StdinValue:
+        """Return standard input of a known kind, for builtins that rewrap what they read
+
+        Args:
+            value: The input
+            kind: The kind it is in
+
+        Returns:
+            The wrapped input
+        """
+        return StdinValue(value=value, kind=kind)
+
+    async def run_named_command(self, name: str, arguments: list[str], state: ShellState) -> int:
+        """Run a command by name with ready-made arguments, writing its output to the current sink
+
+        Args:
+            name: The command name, resolved as a function, builtin or registered command
+            arguments: Its arguments, already expanded
+            state: The shell state to run against
+
+        Returns:
+            The command's exit code
+        """
+        result = await self.dispatch(name, arguments, None, ErrorDestination.STDERR, state)
+        await self.drain_to_sink(result, state)
+        return result.exit_code
+
+    async def run_bypassing_functions(
+        self, name: str, arguments: list[str], stdin: StdinValue | None, state: ShellState
+    ) -> int:
+        """Run a command the way ``command`` does, ignoring functions and aliases of the same name
+
+        Args:
+            name: The command name
+            arguments: Its arguments
+            stdin: Standard input, or None
+            state: The shell state to run against
+
+        Returns:
+            The command's exit code
+        """
+        result = await self.dispatch(name, arguments, stdin, ErrorDestination.STDERR, state, skip_functions=True)
+        await self.drain_to_sink(result, state)
+        return result.exit_code
+
+    async def apply_assignment(
+        self, assignment: Assignment, state: ShellState, run_substitution: RunSubstitution
+    ) -> None:
+        """Store the value of one assignment word, as a scalar, an array, or one element of an array
+
+        ``name=value`` replaces a scalar, ``name+=value`` appends to it, ``name=(words)`` replaces an array,
+        ``name+=(words)`` extends it, and ``name[index]=value`` sets one element, making an array of a scalar
+
+        Args:
+            assignment: The assignment as tokenised
+            state: The shell state whose variables or arrays change
+            run_substitution: Runs a script and returns its output
+        Raises:
+            ShellError: If the variable is read-only
+        """
+        name = assignment.name
+        if name in state.readonly_names:
+            raise ShellError(f"{name}: readonly variable")
+        if assignment.array_words is not None:
+            values = await expand_words(assignment.array_words, state, run_substitution)
+            elements = array_elements(name, state) if assignment.append else {}
+            next_index = max(elements, default=-1) + 1
+            elements.update({next_index + offset: value for offset, value in enumerate(values)})
+            state.variables.pop(name, None)
+            state.arrays[name] = elements
+            return
+        value = await expand_word_unsplit(assignment.value, state, run_substitution)
+        if assignment.index_text is not None:
+            elements = array_elements(name, state)
+            index = await resolve_array_index(assignment.index_text, len(elements), state, run_substitution)
+            if assignment.append:
+                value = elements.get(index, "") + value
+            elements[index] = value
+            state.variables.pop(name, None)
+            state.arrays[name] = elements
+            return
+        if assignment.append and name in state.arrays:
+            state.arrays[name][0] = state.arrays[name].get(0, "") + value
+            return
+        if assignment.append:
+            value = state.variables.get(name, "") + value
+        state.arrays.pop(name, None)
+        state.variables[name] = value
 
     def take_pending_stdin(self, stdin: StdinValue | None, state: ShellState) -> StdinValue | None:
         """Return the input a command that reads standard input should use
@@ -892,6 +1246,7 @@ class Executor:
         state: ShellState,
         in_pipeline: bool = False,
         attached_to_terminal: bool = False,
+        skip_functions: bool = False,
     ) -> ExecutionResult:
         """Run a named command as a function, a builtin, or a registered command
 
@@ -903,11 +1258,12 @@ class Executor:
             state: The shell state to run against
             in_pipeline: Whether a function call should stream in its own task against a copy of the state
             attached_to_terminal: Whether a registered command's output reaches the terminal unredirected
+            skip_functions: Whether a function of the same name is ignored, as ``command`` does
 
         Returns:
             The command's output and exit code
         """
-        if name in state.functions:
+        if name in state.functions and not skip_functions:
             return await self.call_function(name, arguments, stdin, error_destination, state, in_pipeline)
         builtin = self.builtins.get(name)
         names_a_path = PATH_SEPARATOR in name and builtin is None and self.registry.get(name) is None
@@ -1089,6 +1445,7 @@ class Executor:
             stage_state.positional_arguments = arguments
             stage_state.loop_depth = 0
             stage_state.function_depth += 1
+            stage_state.local_scopes.append({})
             return await self.stream_compound(
                 run_body, stage_state, stdin, [], merge_stderr=False, error_destination=error_destination
             )
@@ -1097,9 +1454,11 @@ class Executor:
         state.positional_arguments = arguments
         state.loop_depth = 0
         state.function_depth += 1
+        state.local_scopes.append({})
         try:
             return await self.execute_compound(run_body, state, stdin, [], False, error_destination=error_destination)
         finally:
+            restore_local_scope(state.local_scopes.pop(), state)
             state.positional_arguments = saved_positional
             state.loop_depth = saved_loop_depth
             state.function_depth -= 1
@@ -1277,7 +1636,8 @@ class Executor:
                     stdin = StdinValue(value="", kind=OutputKind.TEXT)
                     continue
                 try:
-                    text = path.read_text(encoding="utf-8", errors="replace")
+                    with path.open(encoding="utf-8", errors="replace", newline="") as handle:
+                        text = handle.read()
                 except FileNotFoundError as error:
                     raise ShellError(f"{redirection.target}: No such file or directory") from error
                 stdin = StdinValue(value=text, kind=OutputKind.TEXT)
@@ -1297,8 +1657,9 @@ class Executor:
         redirections: list[Redirection],
         state: ShellState,
         error_destination: "ErrorDestination | Path | None" = None,
+        merge_stderr: bool = False,
     ) -> ExecutionResult:
-        """Write a result to the file its ``>``, ``>>`` or ``&>`` names, leaving nothing for the sink
+        """Write a result to the file its ``>``, ``>>`` or ``&>`` names, or to standard error for ``>&2``
 
         Every file named by an earlier ``>`` is created and emptied as well, as bash does when it opens them in turn
 
@@ -1307,30 +1668,80 @@ class Executor:
             redirections: The command's redirections
             state: The shell state for expansion and path resolution
             error_destination: Where errors went, so a file already holding them is appended to rather than replaced
+            merge_stderr: Whether error output joined standard output before the redirections, as after ``|&``
 
         Returns:
             The result unchanged when no output redirection applies, otherwise an empty result with its exit code
         """
-        target: Path | None = None
-        append = False
-        redirected = False
-        for redirection in redirections:
-            if redirection.kind not in OUTPUT_REDIRECTION_KINDS:
-                continue
-            if target is not None and not append:
-                target.write_text("", encoding="utf-8")
-            target = await self.redirection_path(redirection, state)
-            append = redirection.kind != RedirectionKind.WRITE_STDOUT
-            redirected = True
+        target, append, redirected = await self.trace_stdout_target(redirections, state, merge_stderr)
         if not redirected:
             return result
         text = await materialise_text(result.stdout, result.kind)
-        if target is not None:
+        if target is None:
+            return ExecutionResult(stdout=text, kind=OutputKind.TEXT, exit_code=result.exit_code)
+        if target == ErrorDestination.STDERR:
+            if text:
+                state.write_error(text)
+        elif isinstance(target, Path):
             shares_file_with_errors = isinstance(error_destination, Path) and error_destination == target
             keep_existing = (append or shares_file_with_errors) and target.exists()
-            existing = target.read_text(encoding="utf-8") if keep_existing else ""
-            target.write_text(existing + text, encoding="utf-8")
+            existing = ""
+            if keep_existing:
+                with target.open(encoding="utf-8", newline="") as handle:
+                    existing = handle.read()
+            target.write_text(existing + text, encoding="utf-8", newline="")
         return ExecutionResult.empty(result.exit_code)
+
+    async def trace_stdout_target(
+        self, redirections: list[Redirection], state: ShellState, merge_stderr: bool
+    ) -> tuple["ErrorDestination | Path | None", bool, bool]:
+        """Return where standard output ends up once the redirections are applied in order
+
+        ``>&2`` points standard output wherever standard error pointed at that moment, so the two are
+        followed together. Every file named by an earlier ``>`` is created and emptied, as bash does
+
+        Args:
+            redirections: The command's redirections
+            state: The shell state for expansion and path resolution
+            merge_stderr: Whether error output joined standard output before any redirection
+
+        Returns:
+            The target (None for the enclosing sink, a file, the null device, or standard error), whether
+            a file is appended to, and whether any output redirection was written at all
+        """
+        stdout_target: ErrorDestination | Path | None = None
+        error_target: ErrorDestination | Path = ErrorDestination.STDOUT if merge_stderr else ErrorDestination.STDERR
+        append = False
+        redirected = False
+        for redirection in redirections:
+            if redirection.kind in (
+                RedirectionKind.WRITE_STDOUT,
+                RedirectionKind.APPEND_STDOUT,
+                RedirectionKind.WRITE_BOTH,
+            ):
+                if isinstance(stdout_target, Path) and not append:
+                    stdout_target.write_text("", encoding="utf-8")
+                path = await self.redirection_path(redirection, state)
+                stdout_target = ErrorDestination.DISCARD if path is None else path
+                append = redirection.kind == RedirectionKind.APPEND_STDOUT
+                redirected = True
+                if redirection.kind == RedirectionKind.WRITE_BOTH:
+                    error_target = stdout_target
+                elif error_target == ErrorDestination.STDOUT:
+                    error_target = ErrorDestination.SINK_STDOUT
+            elif redirection.kind == RedirectionKind.STDERR_TO_STDOUT:
+                error_target = ErrorDestination.STDOUT if stdout_target is None else stdout_target
+            elif redirection.kind in (RedirectionKind.WRITE_STDERR, RedirectionKind.APPEND_STDERR):
+                path = await self.redirection_path(redirection, state)
+                error_target = ErrorDestination.DISCARD if path is None else path
+            elif redirection.kind == RedirectionKind.STDOUT_TO_STDERR:
+                redirected = True
+                if error_target in (ErrorDestination.STDOUT, ErrorDestination.SINK_STDOUT):
+                    stdout_target = None
+                else:
+                    stdout_target = error_target
+                    append = True
+        return stdout_target, append, redirected
 
     async def builtin_cd(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
         """Change the current directory
@@ -1356,10 +1767,21 @@ class Executor:
         if not target.is_dir():
             state.write_error(f"bash: cd: {target_text}: No such file or directory\n")
             return EXIT_CODE_FAILURE
+        self.change_directory(target, state)
+        if arguments[:1] == ["-"]:
+            await state.output_sink.write(f"{state.cwd.as_posix()}\n")
+        return EXIT_CODE_SUCCESS
+
+    def change_directory(self, target: Path, state: ShellState) -> None:
+        """Move the shell into a directory, keeping ``OLDPWD`` and ``PWD`` up to date
+
+        Args:
+            target: The directory, which must exist
+            state: The shell state whose directory changes
+        """
         state.variables[PREVIOUS_DIRECTORY_VARIABLE_NAME] = str(state.cwd)
         state.cwd = target.resolve()
         state.variables[CURRENT_DIRECTORY_VARIABLE_NAME] = str(state.cwd)
-        return EXIT_CODE_SUCCESS
 
     async def builtin_export(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
         """Mark variables for export, setting those given as ``name=value``
@@ -1393,7 +1815,16 @@ class Executor:
         for name in arguments:
             if name.startswith("-"):
                 continue
+            element_match = ARRAY_ELEMENT_PATTERN.match(name)
+            if element_match is not None:
+                elements = state.arrays.get(element_match.group(1), {})
+                index = await resolve_array_index(
+                    element_match.group(2), len(elements), state, self.substitution_runner(state)
+                )
+                elements.pop(index, None)
+                continue
             state.variables.pop(name, None)
+            state.arrays.pop(name, None)
             state.functions.pop(name, None)
             state.exported_names.discard(name)
         return EXIT_CODE_SUCCESS
@@ -1481,7 +1912,12 @@ class Executor:
         """
         if arguments:
             jobs: list[Job | None] = [
-                state.job_table.jobs.get(int(argument)) if argument.isdigit() else None for argument in arguments
+                state.job_table.job_for_spec(argument)
+                if argument.startswith("%")
+                else state.job_table.jobs.get(int(argument))
+                if argument.isdigit()
+                else None
+                for argument in arguments
             ]
         else:
             jobs = list(state.job_table.jobs.values())
@@ -1506,9 +1942,16 @@ class Executor:
         Returns:
             Zero
         """
-        for job_number, job in enumerate(state.job_table.jobs.values(), start=1):
+        jobs = list(state.job_table.jobs.values())
+        for job_number, job in enumerate(jobs, start=1):
             status = JOB_STATUS_WORDS[job.status]
-            await state.output_sink.write(f"[{job_number}] {status:<8} {job.command_text} &\n")
+            if job.status == JobStatus.DONE and job.exit_code != EXIT_CODE_SUCCESS:
+                status = f"Exit {job.exit_code}"
+            marker = "+" if job_number == len(jobs) else "-" if job_number == len(jobs) - 1 else " "
+            suffix = " &" if job.status == JobStatus.RUNNING else ""
+            await state.output_sink.write(
+                f"[{job_number}]{marker}  {status:<{JOB_STATUS_COLUMN_WIDTH}}{job.command_text}{suffix}\n"
+            )
         return EXIT_CODE_SUCCESS
 
     async def builtin_no_op(self, arguments: list[str], stdin: StdinValue | None, state: ShellState) -> int:
@@ -1523,6 +1966,73 @@ class Executor:
             Zero
         """
         return EXIT_CODE_SUCCESS
+
+
+def split_case_patterns(patterns_text: str) -> list[str]:
+    """Return the alternatives of a case pattern list, split at the bars outside quotes
+
+    Args:
+        patterns_text: The text before the clause's closing parenthesis
+
+    Returns:
+        Each pattern with surrounding whitespace removed
+    """
+    patterns: list[str] = []
+    current = ""
+    index = 0
+    while index < len(patterns_text):
+        character = patterns_text[index]
+        if character == "\\" and index + 1 < len(patterns_text):
+            current += patterns_text[index : index + 2]
+            index += 2
+            continue
+        if character in "'\"":
+            closing = patterns_text.find(character, index + 1)
+            closing = len(patterns_text) - 1 if closing == -1 else closing
+            current += patterns_text[index : closing + 1]
+            index = closing + 1
+            continue
+        if character == "|":
+            patterns.append(current.strip())
+            current = ""
+        else:
+            current += character
+        index += 1
+    patterns.append(current.strip())
+    return patterns
+
+
+def trace_assignment(assignment: Assignment) -> str:
+    """Return an assignment the way ``set -x`` shows it
+
+    Args:
+        assignment: The assignment as tokenised
+
+    Returns:
+        ``name=value``, or ``name=(words)`` for an array
+    """
+    operator = "+=" if assignment.append else "="
+    if assignment.array_words is not None:
+        inner = " ".join(word.raw_text() for word in assignment.array_words)
+        return f"{assignment.name}{operator}({inner})"
+    subscript = f"[{assignment.index_text}]" if assignment.index_text is not None else ""
+    return f"{assignment.name}{subscript}{operator}{assignment.value.raw_text()}"
+
+
+def restore_local_scope(scope: dict[str, tuple[str | None, dict[int, str] | None]], state: ShellState) -> None:
+    """Put back the variables a function declared local, as they were before it ran
+
+    Args:
+        scope: Each local name with the scalar and array values it had before, None when it had none
+        state: The shell state to restore
+    """
+    for name, (value, elements) in scope.items():
+        state.variables.pop(name, None)
+        state.arrays.pop(name, None)
+        if value is not None:
+            state.variables[name] = value
+        if elements is not None:
+            state.arrays[name] = elements
 
 
 def record_job_outcome(job: Job, task: asyncio.Task) -> None:
@@ -1571,7 +2081,7 @@ def file_appender(path: Path) -> Callable[[str], None]:
     """
 
     def append(text: str) -> None:
-        with path.open("a", encoding="utf-8") as handle:
+        with path.open("a", encoding="utf-8", newline="") as handle:
             handle.write(text)
 
     return append

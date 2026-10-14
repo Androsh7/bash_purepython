@@ -9,6 +9,7 @@ class FalseCommand(Command):
     """Fail without output"""
 
     name = "false"
+    summary = "do nothing, unsuccessfully"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

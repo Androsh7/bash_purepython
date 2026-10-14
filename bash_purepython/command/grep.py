@@ -2,7 +2,9 @@
 
 # Standard libraries
 import re
+from collections import deque
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 # Project libraries
 from bash_purepython.command.arguments import CommandArgumentParser, parse_command_arguments
@@ -14,6 +16,50 @@ from bash_purepython.streams import as_async_iterator
 
 NO_MATCH_EXIT_CODE = 1
 LABEL_SEPARATOR = ":"
+CONTEXT_SEPARATOR = "-"
+GROUP_SEPARATOR = "--"
+NO_CONTEXT = 0
+CURRENT_DIRECTORY = "."
+OPTIONS_END = "--"
+NUMERIC_SHORTHAND_PATTERN = re.compile(r"^-([0-9]+)$")
+
+
+@dataclass(frozen=True)
+class MatchOptions:
+    """Hold the options that shape what grep prints for each target"""
+
+    invert: bool
+    show_filename: bool
+    line_numbers: bool
+    count_only: bool
+    files_only: bool
+    quiet: bool
+    only_matching: bool
+    before_context: int
+    after_context: int
+    separate_groups: bool
+
+
+def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
+    """Return the arguments with the ``-<count>`` form rewritten as ``-C <count>``
+
+    Args:
+        arguments: The arguments after the command name
+
+    Returns:
+        The rewritten arguments
+    """
+    expanded: list[str] = []
+    for index, argument in enumerate(arguments):
+        if argument == OPTIONS_END:
+            expanded.extend(arguments[index:])
+            break
+        match = NUMERIC_SHORTHAND_PATTERN.match(argument)
+        if match:
+            expanded.extend(["-C", match.group(1)])
+        else:
+            expanded.append(argument)
+    return expanded
 
 
 def search_targets(invocation: CommandInvocation, paths: list[str], recursive: bool) -> list[tuple[str, str]]:
@@ -22,24 +68,42 @@ def search_targets(invocation: CommandInvocation, paths: list[str], recursive: b
     Args:
         invocation: The call, whose state resolves paths and reports errors
         paths: The paths named on the command line, or none for standard input
-        recursive: Whether directories are walked instead of refused
+        recursive: Whether directories are walked instead of refused, the current one when none is named
 
     Returns:
         Pairs of the label to print and the path text to open
     """
     targets: list[tuple[str, str]] = []
+    if recursive and not paths:
+        return [(label, path_text) for label, path_text in walk_directory(invocation, CURRENT_DIRECTORY, prefix="")]
     for path_text in source_paths(invocation, paths):
         if path_text == STDIN_PATH:
             targets.append((STDIN_LABEL, STDIN_PATH))
             continue
         path = invocation.state.resolve_path(path_text)
         if path.is_dir() and recursive:
-            for child in sorted(path.rglob("*")):
-                if child.is_file():
-                    relative = child.relative_to(path).as_posix()
-                    targets.append((f"{path_text.rstrip('/')}/{relative}", str(child)))
+            targets.extend(walk_directory(invocation, path_text, prefix=f"{path_text.rstrip('/')}/"))
         else:
             targets.append((path_text, path_text))
+    return targets
+
+
+def walk_directory(invocation: CommandInvocation, path_text: str, prefix: str) -> list[tuple[str, str]]:
+    """Return every file under a directory, labelled relative to it with the prefix
+
+    Args:
+        invocation: The call, whose state resolves paths
+        path_text: The directory as written
+        prefix: What to put before each relative path in its label
+
+    Returns:
+        Pairs of the label to print and the path text to open, in sorted order
+    """
+    directory = invocation.state.resolve_path(path_text)
+    targets: list[tuple[str, str]] = []
+    for child in sorted(directory.rglob("*")):
+        if child.is_file():
+            targets.append((prefix + child.relative_to(directory).as_posix(), str(child)))
     return targets
 
 
@@ -68,16 +132,93 @@ def match_lines(invocation: CommandInvocation, label: str, path_text: str) -> As
     return file_lines(path)
 
 
+def format_line(label: str, line_number: int, text: str, separator: str, options: MatchOptions) -> str:
+    """Return one output line with the file and line number prefixes the options ask for
+
+    Args:
+        label: The target's label
+        line_number: The line's number
+        text: The line or matched part
+        separator: ``:`` for a selected line, ``-`` for a context line
+        options: Whether the label and number are shown
+
+    Returns:
+        The line with a newline
+    """
+    prefix = ([label] if options.show_filename else []) + ([str(line_number)] if options.line_numbers else [])
+    return separator.join([*prefix, text]) + "\n"
+
+
+class ContextPrinter:
+    """Print selected lines with their surrounding context and the separator between distant groups"""
+
+    def __init__(self, label: str, options: MatchOptions, printed_any_group: bool):
+        """Start a target
+
+        Args:
+            label: The target's label
+            options: How lines are prefixed and how much context surrounds them
+            printed_any_group: Whether an earlier target already printed a group
+        """
+        self.label = label
+        self.options = options
+        self.printed_any_group = printed_any_group
+        self.before: deque[tuple[int, str]] = deque(maxlen=options.before_context or None)
+        self.after_remaining = 0
+        self.last_printed_line_number = 0
+
+    def selected(self, line_number: int, text: str, matches: list[str]) -> list[str]:
+        """Return the output for a selected line: a separator if needed, its leading context, then the line
+
+        Args:
+            line_number: The line's number
+            text: The line
+            matches: The matched parts, printed one per line under -o
+
+        Returns:
+            The output lines
+        """
+        output: list[str] = []
+        first_context_number = self.before[0][0] if self.before else line_number
+        starts_new_group = (
+            self.last_printed_line_number == 0 or first_context_number > self.last_printed_line_number + 1
+        )
+        if self.options.separate_groups and starts_new_group and self.printed_any_group:
+            output.append(GROUP_SEPARATOR + "\n")
+        for context_number, context_text in self.before:
+            output.append(format_line(self.label, context_number, context_text, CONTEXT_SEPARATOR, self.options))
+        self.before.clear()
+        if self.options.only_matching:
+            for matched in matches:
+                output.append(format_line(self.label, line_number, matched, LABEL_SEPARATOR, self.options))
+        else:
+            output.append(format_line(self.label, line_number, text, LABEL_SEPARATOR, self.options))
+        self.last_printed_line_number = line_number
+        self.after_remaining = self.options.after_context
+        self.printed_any_group = True
+        return output
+
+    def unselected(self, line_number: int, text: str) -> list[str]:
+        """Return the output for a line that was not selected: itself when trailing context is still owed
+
+        Args:
+            line_number: The line's number
+            text: The line
+
+        Returns:
+            The output lines
+        """
+        if self.after_remaining > 0:
+            self.after_remaining -= 1
+            self.last_printed_line_number = line_number
+            return [format_line(self.label, line_number, text, CONTEXT_SEPARATOR, self.options)]
+        if self.options.before_context > NO_CONTEXT:
+            self.before.append((line_number, text))
+        return []
+
+
 async def grep_targets(
-    invocation: CommandInvocation,
-    targets: list[tuple[str, str]],
-    regex: re.Pattern[str],
-    invert: bool,
-    show_filename: bool,
-    line_numbers: bool,
-    count_only: bool,
-    files_only: bool,
-    quiet: bool,
+    invocation: CommandInvocation, targets: list[tuple[str, str]], regex: re.Pattern[str], options: MatchOptions
 ) -> AsyncIterator[str]:
     """Yield the matching lines, counts or file names, and set the exit status to one when nothing matched
 
@@ -85,45 +226,47 @@ async def grep_targets(
         invocation: The call, providing standard input and the shell state
         targets: The labels and paths to search
         regex: The compiled pattern
-        invert: Whether non-matching lines are selected
-        show_filename: Whether each line is prefixed with its label
-        line_numbers: Whether each line is prefixed with its number
-        count_only: Whether only the count per target is printed
-        files_only: Whether only the names of matching targets are printed
-        quiet: Whether nothing is printed and the search stops at the first match
+        options: What is printed for each match
 
     Yields:
         Output lines with newlines
     """
     any_match = False
+    printed_any_group = False
     for label, path_text in targets:
         lines = match_lines(invocation, label, path_text)
         if lines is None:
             continue
         matches = 0
+        printer = ContextPrinter(label, options, printed_any_group)
         try:
             line_number = 0
             async for raw_line in lines:
                 line_number += 1
                 line = raw_line.rstrip("\n")
-                if bool(regex.search(line)) == invert:
+                found = [match.group(0) for match in regex.finditer(line) if match.group(0)]
+                if bool(regex.search(line)) == options.invert:
+                    if not options.count_only and not options.files_only and not options.quiet:
+                        for piece in printer.unselected(line_number, line):
+                            yield piece
                     continue
                 matches += 1
                 any_match = True
-                if quiet:
+                if options.quiet:
                     return
-                if count_only or files_only:
+                if options.count_only or options.files_only:
                     continue
-                prefix = ([label] if show_filename else []) + ([str(line_number)] if line_numbers else [])
-                yield LABEL_SEPARATOR.join([*prefix, line]) + "\n"
+                for piece in printer.selected(line_number, line, found):
+                    yield piece
         finally:
             aclose = getattr(lines, "aclose", None)
             if aclose is not None:
                 await aclose()
-        if files_only and matches:
+        printed_any_group = printer.printed_any_group
+        if options.files_only and matches:
             yield label + "\n"
-        elif count_only:
-            yield (f"{label}{LABEL_SEPARATOR}{matches}" if show_filename else str(matches)) + "\n"
+        elif options.count_only:
+            yield (f"{label}{LABEL_SEPARATOR}{matches}" if options.show_filename else str(matches)) + "\n"
     if not any_match and invocation.exit_status.code == EXIT_CODE_SUCCESS:
         invocation.exit_status.code = NO_MATCH_EXIT_CODE
 
@@ -132,6 +275,7 @@ class GrepCommand(Command):
     """Print lines matching a pattern"""
 
     name = "grep"
+    summary = "print lines that match patterns"
     input_kinds = frozenset({InputKind.STREAM_TEXT, InputKind.TEXT, InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 
@@ -163,9 +307,15 @@ class GrepCommand(Command):
         parser.add_argument(
             "-q", "--quiet", "--silent", action="store_true", help="print nothing, exit zero on a match"
         )
+        parser.add_argument("-o", "--only-matching", action="store_true", help="print only the matched parts")
+        parser.add_argument("-w", "--word-regexp", action="store_true", help="match only whole words")
+        parser.add_argument("-x", "--line-regexp", action="store_true", help="match only whole lines")
+        parser.add_argument("-A", "--after-context", type=int, default=None, help="print NUM lines after")
+        parser.add_argument("-B", "--before-context", type=int, default=None, help="print NUM lines before")
+        parser.add_argument("-C", "--context", type=int, default=None, help="print NUM lines of context")
         parser.add_argument("-e", "--regexp", dest="patterns", action="append", default=[], help="a pattern")
         parser.add_argument("pattern_and_paths", nargs="*", help="the pattern, then files to search")
-        parsed = parse_command_arguments(parser, invocation.arguments, invocation.state)
+        parsed = parse_command_arguments(parser, expand_numeric_shorthand(invocation.arguments), invocation.state)
         if isinstance(parsed, int):
             return CommandResult(stdout=as_async_iterator(()), exit_code=parsed)
         patterns = list(parsed.patterns)
@@ -176,25 +326,33 @@ class GrepCommand(Command):
                 return CommandResult(stdout=as_async_iterator(()), exit_code=EXIT_CODE_USAGE_ERROR)
             patterns.append(remaining.pop(0))
         alternatives = [re.escape(pattern) if parsed.fixed_strings else pattern for pattern in patterns]
+        combined = "|".join(f"(?:{alternative})" for alternative in alternatives)
+        if parsed.line_regexp:
+            combined = f"^(?:{combined})$"
+        elif parsed.word_regexp:
+            combined = rf"(?<!\w)(?:{combined})(?!\w)"
         try:
-            regex = re.compile(
-                "|".join(f"(?:{alternative})" for alternative in alternatives),
-                re.IGNORECASE if parsed.ignore_case else 0,
-            )
+            regex = re.compile(combined, re.IGNORECASE if parsed.ignore_case else 0)
         except re.error as error:
             invocation.state.write_error(f"grep: invalid pattern: {error}\n")
             return CommandResult(stdout=as_async_iterator(()), exit_code=EXIT_CODE_USAGE_ERROR)
         targets = search_targets(invocation, remaining, parsed.recursive)
         show_filename = (parsed.with_filename or len(targets) > 1 or parsed.recursive) and not parsed.no_filename
-        stream = grep_targets(
-            invocation,
-            targets,
-            regex,
-            parsed.invert_match,
-            show_filename,
-            parsed.line_number,
-            parsed.count,
-            parsed.files_with_matches,
-            parsed.quiet,
+        context_values = (parsed.after_context, parsed.before_context, parsed.context)
+        context = parsed.context if parsed.context is not None else NO_CONTEXT
+        after_context = parsed.after_context if parsed.after_context is not None else NO_CONTEXT
+        before_context = parsed.before_context if parsed.before_context is not None else NO_CONTEXT
+        options = MatchOptions(
+            invert=parsed.invert_match,
+            show_filename=show_filename,
+            line_numbers=parsed.line_number,
+            count_only=parsed.count,
+            files_only=parsed.files_with_matches,
+            quiet=parsed.quiet,
+            only_matching=parsed.only_matching,
+            before_context=max(before_context, context),
+            after_context=max(after_context, context),
+            separate_groups=any(value is not None for value in context_values),
         )
+        stream = grep_targets(invocation, targets, regex, options)
         return CommandResult(stdout=stream, exit_code=EXIT_CODE_SUCCESS)

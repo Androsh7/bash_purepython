@@ -31,6 +31,7 @@ class SleepCommand(Command):
     """Pause for a duration without blocking other jobs"""
 
     name = "sleep"
+    summary = "delay for an amount of time"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

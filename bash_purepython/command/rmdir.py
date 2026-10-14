@@ -10,6 +10,7 @@ class RmdirCommand(Command):
     """Remove empty directories"""
 
     name = "rmdir"
+    summary = "remove empty directories"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

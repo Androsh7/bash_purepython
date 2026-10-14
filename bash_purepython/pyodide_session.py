@@ -3,6 +3,7 @@
 # Standard libraries
 import json
 import os
+import sys
 import traceback
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -10,7 +11,9 @@ from typing import Any, ClassVar, Protocol
 
 # Project libraries
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
+from bash_purepython.command.help import HelpCommand
 from bash_purepython.command.registry import CommandRegistry
+from bash_purepython.continuation import script_needs_more_lines
 from bash_purepython.execute_command import SCRIPT_COMMAND_NAMES, Executor
 from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, ShellState
 
@@ -59,7 +62,7 @@ class HostCommand(Command):
     input_kinds: ClassVar[frozenset[InputKind]] = frozenset({InputKind.ARGUMENTS, InputKind.TEXT})
     output_kinds: ClassVar[frozenset[OutputKind]] = frozenset({OutputKind.STREAM_TEXT})
 
-    def __init__(self, name: str, start_host_call: HostCallStarter, resting_directory: Path):
+    def __init__(self, name: str, start_host_call: HostCallStarter, resting_directory: Path, summary: str = ""):
         """Bind one host command name to the callback that starts it
 
         Args:
@@ -68,8 +71,10 @@ class HostCommand(Command):
                 attached to the terminal, and the standard input piped or redirected into it or None,
                 and returns a handle on the running command
             resting_directory: The directory the process returns to once the command has finished
+            summary: The one-line description ``help`` prints next to the name
         """
         self.name = name
+        self.summary = summary
         self.start_host_call = start_host_call
         self.resting_directory = resting_directory
 
@@ -102,6 +107,19 @@ class HostCommand(Command):
         return CommandResult(
             stdout=relay_host_output(handle, invocation, self.resting_directory), exit_code=EXIT_CODE_SUCCESS
         )
+
+
+def read_terminal_line() -> str | None:
+    """Return the next line typed at the terminal, or None at the end of input
+
+    Under Pyodide standard input is the host's bridge to the terminal, so a ``read`` builtin blocks the
+    worker until the person has typed a line
+
+    Returns:
+        The line with its newline, or None
+    """
+    line = sys.stdin.readline()
+    return line or None
 
 
 def enter_directory(directory: Path) -> None:
@@ -146,7 +164,7 @@ class PyodideSession:
         self,
         home: str,
         environment: dict[str, str],
-        host_command_names: list[str],
+        host_command_names: list[str] | dict[str, str],
         start_host_call: HostCallStarter,
         write_output: TextWriter,
         write_error: TextWriter,
@@ -156,15 +174,19 @@ class PyodideSession:
         Args:
             home: The home directory, which is also the starting directory
             environment: The variables the shell starts with
-            host_command_names: The commands the host runs itself
+            host_command_names: The commands the host runs itself, as names or as names mapped to summaries
             start_host_call: Starts one host command and returns its handle
             write_output: Receives standard output chunks as they are written
             write_error: Receives standard error chunks as they are written
         """
         self.registry = CommandRegistry()
-        for name in host_command_names:
-            self.registry.register(HostCommand(name, start_host_call, Path(home)))
+        summaries = (
+            host_command_names if isinstance(host_command_names, dict) else dict.fromkeys(host_command_names, "")
+        )
+        for name, summary in summaries.items():
+            self.registry.register(HostCommand(name, start_host_call, Path(home), summary))
         self.executor = Executor(self.registry)
+        self.registry.register(HelpCommand(self.command_names, self.command_summaries))
         self.home = Path(home)
         self.state = ShellState(
             cwd=Path(home), write_output=write_output, write_error=write_error, variables=dict(environment)
@@ -172,6 +194,7 @@ class PyodideSession:
         self.state.variables.setdefault(HOME_VARIABLE, home)
         self.state.variables.setdefault(PWD_VARIABLE, home)
         self.state.exported_names.update(self.state.variables)
+        self.state.read_line = read_terminal_line
         self.console: Any = None
         self.write_output = write_output
         self.write_error = write_error
@@ -179,6 +202,21 @@ class PyodideSession:
     def command_names(self) -> list[str]:
         """Return every command and builtin the shell knows, sorted"""
         return sorted(set(self.registry.names()) | set(self.executor.builtins) | SCRIPT_COMMAND_NAMES)
+
+    def command_summaries(self) -> dict[str, str]:
+        """Return the one-line summary of every command and builtin by name"""
+        return {**self.executor.builtin_summaries(), **self.registry.summaries()}
+
+    def needs_more(self, text: str) -> bool:
+        """Return whether the lines typed so far leave a command unfinished, so the host should ask for another
+
+        Args:
+            text: The lines entered so far, joined by newlines
+
+        Returns:
+            True when another line is needed before the text can run
+        """
+        return script_needs_more_lines(text)
 
     async def run(self, script: str) -> str:
         """Run a script and return the exit code, directory and variables as JSON

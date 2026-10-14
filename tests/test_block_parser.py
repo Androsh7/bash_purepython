@@ -11,6 +11,8 @@ from bash_purepython.workflow import (
     AndOrListNode,
     BackgroundNode,
     BraceGroupNode,
+    CaseNode,
+    CaseTerminator,
     ForNode,
     FunctionDefinitionNode,
     IfNode,
@@ -206,10 +208,33 @@ def test_build_plan_makes_function_definitions(script: str, expected: FunctionDe
 
 @pytest.mark.parametrize(
     "script",
-    ["case $x in a) echo;; esac", "select x in a b; do echo $x; done"],
-    ids=["case", "select"],
+    ["select x in a b; do echo $x; done"],
+    ids=["select"],
 )
 def test_build_plan_rejects_unsupported_blocks(script: str) -> None:
     """Check that constructs outside this slice raise rather than misbehave"""
     with pytest.raises(UnsupportedBlockError):
         plan_for(script)
+
+
+def test_build_plan_reads_case_clauses_with_their_terminators() -> None:
+    """Check that a case block becomes a node holding its word, clauses and trailing redirection"""
+    plan = plan_for("case $x in\n  a|b) echo ab;;\n  c) echo c;&\n  *) echo other\nesac > out")
+
+    assert isinstance(plan, CaseNode)
+    assert plan.word_text == "$x"
+    assert [(clause.patterns_text, clause.body, clause.terminator) for clause in plan.clauses] == [
+        ("a|b", "echo ab", CaseTerminator.STOP),
+        ("c", "echo c", CaseTerminator.FALL_THROUGH),
+        ("*", "echo other", CaseTerminator.STOP),
+    ]
+    assert [(redirection.kind, redirection.target) for redirection in plan.redirections] == [
+        (RedirectionKind.WRITE_STDOUT, "out")
+    ]
+
+
+def test_build_plan_reads_an_arithmetic_for_loop() -> None:
+    """Check that for (( ; ; )) keeps its three expressions and body"""
+    plan = plan_for("for ((i=0; i<3; i++)); do echo $i; done")
+
+    assert plan == ForNode(variable="", words_text=None, body="echo $i", arithmetic=("i=0", "i<3", "i++"))

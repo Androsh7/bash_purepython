@@ -92,6 +92,10 @@ class ScriptSplitter:
         self.saw_top_level_heredoc = False
         self.is_function_definition = False
         self.ends_in_background = False
+        self.unclosed_quote = False
+        self.unclosed_conditional = False
+        self.unterminated_heredoc = False
+        self.trailing_backslash = False
 
     def split(self) -> list[CommandBlock]:
         """Return every top-level command in the script, in order
@@ -112,6 +116,8 @@ class ScriptSplitter:
             self._consume_line_continuation()
             return
         if character == "\\":
+            if self.position + 1 >= len(self.script):
+                self.trailing_backslash = True
             self.position += 2
             self.at_word_start = False
             return
@@ -171,12 +177,33 @@ class ScriptSplitter:
     def _consume_single_quoted(self) -> None:
         """Skip past a single-quoted string"""
         closing_index = self.script.find("'", self.position + 1)
+        if closing_index == -1:
+            self.unclosed_quote = True
         self.position = len(self.script) if closing_index == -1 else closing_index + 1
+        self.at_word_start = False
+
+    def _consume_ansi_c_quoted(self) -> None:
+        """Skip past a ``$'...'`` string, in which a backslash protects the next character"""
+        self.position += 1
+        closed = False
+        while self.position < len(self.script):
+            character = self.script[self.position]
+            if character == "\\":
+                self.position += 2
+            elif character == "'":
+                self.position += 1
+                closed = True
+                break
+            else:
+                self.position += 1
+        if not closed:
+            self.unclosed_quote = True
         self.at_word_start = False
 
     def _consume_double_quoted(self) -> None:
         """Skip past a double-quoted string, including any expansions nested inside it"""
         self.position += 1
+        closed = False
         while self.position < len(self.script):
             character = self.script[self.position]
             if self.script.startswith("\\\n", self.position):
@@ -187,6 +214,7 @@ class ScriptSplitter:
                 self.position += 2
             elif character == '"':
                 self.position += 1
+                closed = True
                 break
             elif character == "`":
                 self._consume_backticks()
@@ -198,20 +226,26 @@ class ScriptSplitter:
                 self._skip_balanced("{", "}")
             else:
                 self.position += 1
+        if not closed:
+            self.unclosed_quote = True
         self.at_word_start = False
 
     def _consume_backticks(self) -> None:
         """Skip past a backtick command substitution"""
         self.position += 1
+        closed = False
         while self.position < len(self.script):
             character = self.script[self.position]
             if character == "\\":
                 self.position += 2
             elif character == "`":
                 self.position += 1
+                closed = True
                 break
             else:
                 self.position += 1
+        if not closed:
+            self.unclosed_quote = True
         self.at_word_start = False
 
     def _skip_balanced(self, opening: str, closing: str) -> None:
@@ -238,6 +272,8 @@ class ScriptSplitter:
                 elif character == closing:
                     depth -= 1
                 self.position += 1
+        if depth > 0:
+            self.unclosed_quote = True
 
     def _consume_comment(self) -> None:
         """Drop a comment running to the end of the line"""
@@ -263,13 +299,17 @@ class ScriptSplitter:
     def _consume_heredoc_bodies(self) -> None:
         """Consume every pending heredoc body, each ending at its own delimiter line"""
         for delimiter, strip_leading_tabs in self.pending_heredocs:
+            closed = False
             while self.position < len(self.script):
                 newline_index = self.script.find("\n", self.position)
                 line_end = len(self.script) if newline_index == -1 else newline_index
                 line = self.script[self.position : line_end]
                 self.position = min(line_end + 1, len(self.script))
                 if (line.lstrip("\t") if strip_leading_tabs else line) == delimiter:
+                    closed = True
                     break
+            if not closed:
+                self.unterminated_heredoc = True
         self.pending_heredocs.clear()
 
     def _consume_dollar(self) -> None:
@@ -278,6 +318,9 @@ class ScriptSplitter:
             self.nesting.append(Nesting.PARENTHESIS)
             self.position += 2
             self.at_command_start = True
+        elif self.script.startswith("$'", self.position):
+            self.position += 1
+            self._consume_ansi_c_quoted()
         elif self.script.startswith("${", self.position):
             self.nesting.append(Nesting.PARAMETER_EXPANSION)
             self.position += 2
@@ -321,7 +364,11 @@ class ScriptSplitter:
         """Note whether a top-level opening parenthesis starts a subshell or follows a function name"""
         if self.top_level_word_count == 0 and self.opening_bracket is None:
             self.opening_bracket = "("
-        elif self.top_level_word_count == 1 and not (self.saw_top_level_pipe or self.saw_top_level_and_or):
+        elif (
+            self.top_level_word_count == 1
+            and not (self.saw_top_level_pipe or self.saw_top_level_and_or)
+            and self._previous_character() != "="
+        ):
             self.is_function_definition = True
 
     def _followed_by_whitespace_or_end(self) -> bool:
@@ -391,6 +438,7 @@ class ScriptSplitter:
                 return
             else:
                 self.position += 1
+        self.unclosed_conditional = True
 
     def _consume_separator(self, character: str) -> None:
         """Consume a newline, semicolon, ampersand, or pipe and end the command when appropriate

@@ -75,6 +75,7 @@ class GzipCommand(Command):
     """Compress files with gzip, or decompress them with -d"""
 
     name = "gzip"
+    summary = "compress files or standard input"
     input_kinds = frozenset(
         {InputKind.STREAM_BYTES, InputKind.BYTES, InputKind.STREAM_TEXT, InputKind.TEXT, InputKind.ARGUMENTS}
     )
@@ -158,4 +159,5 @@ class GunzipCommand(GzipCommand):
     """Decompress gzip files"""
 
     name = "gunzip"
+    summary = "decompress gzip data"
     decompress_by_default = True

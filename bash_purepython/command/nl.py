@@ -60,6 +60,7 @@ class NlCommand(Command):
     """Number the lines of files"""
 
     name = "nl"
+    summary = "number lines of files"
     input_kinds = frozenset({InputKind.STREAM_TEXT, InputKind.TEXT, InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 

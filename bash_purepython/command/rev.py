@@ -29,6 +29,7 @@ class RevCommand(Command):
     """Reverse each line of input"""
 
     name = "rev"
+    summary = "reverse lines characterwise"
     input_kinds = frozenset({InputKind.STREAM_TEXT, InputKind.TEXT, InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 

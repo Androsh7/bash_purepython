@@ -2,6 +2,7 @@
 
 # Standard libraries
 import re
+from collections import deque
 from collections.abc import AsyncIterator
 
 # Project libraries
@@ -15,10 +16,13 @@ DEFAULT_LINE_COUNT = 10
 STDIN_PATH = "-"
 STDIN_LABEL = "standard input"
 NUMERIC_SHORTHAND_PATTERN = re.compile(r"^-([0-9]+)$")
+COUNT_OPTIONS = frozenset({"-n", "-c", "--lines", "--bytes"})
 
 
 def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
     """Return the arguments with the legacy ``-<count>`` form rewritten as ``-n <count>``
+
+    A number following ``-n`` or ``-c`` is that option's value, so ``-n -3`` is left alone
 
     Args:
         arguments: The arguments after the command name
@@ -27,16 +31,59 @@ def expand_numeric_shorthand(arguments: list[str]) -> list[str]:
         The rewritten arguments
     """
     expanded: list[str] = []
+    previous_took_value = False
     for index, argument in enumerate(arguments):
         if argument == "--":
             expanded.extend(arguments[index:])
             break
         match = NUMERIC_SHORTHAND_PATTERN.match(argument)
-        if match:
+        if match and not previous_took_value:
             expanded.extend(["-n", match.group(1)])
         else:
             expanded.append(argument)
+        previous_took_value = argument in COUNT_OPTIONS
     return expanded
+
+
+async def skip_last_lines(lines: AsyncIterator[str], count: int) -> AsyncIterator[str]:
+    """Yield every line but the last count, holding back only that many at a time
+
+    Args:
+        lines: The source lines
+        count: How many trailing lines to drop
+
+    Yields:
+        The lines before the last count
+    """
+    held: deque[str] = deque()
+    try:
+        async for line in lines:
+            held.append(line)
+            if len(held) > count:
+                yield held.popleft()
+    finally:
+        await close_iterator(lines)
+
+
+async def skip_last_characters(lines: AsyncIterator[str], count: int) -> AsyncIterator[str]:
+    """Yield all text but the last count characters, holding back only that many at a time
+
+    Args:
+        lines: The source lines
+        count: How many trailing characters to drop
+
+    Yields:
+        Pieces of the text before the last count characters
+    """
+    held = ""
+    try:
+        async for line in lines:
+            held += line
+            if len(held) > count:
+                yield held[: len(held) - count]
+                held = held[len(held) - count :]
+    finally:
+        await close_iterator(lines)
 
 
 async def take_lines(lines: AsyncIterator[str], limit: int) -> AsyncIterator[str]:
@@ -123,6 +170,24 @@ def read_file_lines(path_text: str, state: ShellState) -> AsyncIterator[str] | N
     return file_lines(path)
 
 
+def limit_source(lines: AsyncIterator[str], line_limit: int, character_limit: int | None) -> AsyncIterator[str]:
+    """Return the source cut to the first lines or characters, or to all but the last when the limit is negative
+
+    Args:
+        lines: The source lines
+        line_limit: Lines to keep when no character limit is given
+        character_limit: Characters to keep, or None
+
+    Returns:
+        An async iterator over the kept text
+    """
+    if character_limit is None:
+        return skip_last_lines(lines, -line_limit) if line_limit < 0 else take_lines(lines, line_limit)
+    if character_limit < 0:
+        return skip_last_characters(lines, -character_limit)
+    return take_characters(lines, character_limit)
+
+
 async def head_sources(
     invocation: CommandInvocation, paths: list[str], line_limit: int, character_limit: int | None, show_headers: bool
 ) -> AsyncIterator[str]:
@@ -149,9 +214,7 @@ async def head_sources(
                 label = STDIN_LABEL if path_text == STDIN_PATH else path_text
                 yield ("\n" if printed_any_source else "") + f"==> {label} <==\n"
             printed_any_source = True
-            limited = (
-                take_lines(lines, line_limit) if character_limit is None else take_characters(lines, character_limit)
-            )
+            limited = limit_source(lines, line_limit, character_limit)
             try:
                 async for piece in limited:
                     yield piece
@@ -165,6 +228,7 @@ class HeadCommand(Command):
     """Print the first part of files or standard input"""
 
     name = "head"
+    summary = "output the first part of files"
     input_kinds = frozenset({InputKind.STREAM_TEXT, InputKind.TEXT, InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 

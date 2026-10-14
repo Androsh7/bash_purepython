@@ -123,6 +123,7 @@ class CutCommand(Command):
     """Remove sections from each line"""
 
     name = "cut"
+    summary = "remove sections from each line"
     input_kinds = frozenset({InputKind.STREAM_TEXT, InputKind.TEXT, InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 

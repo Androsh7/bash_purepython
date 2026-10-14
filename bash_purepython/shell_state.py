@@ -4,6 +4,7 @@
 import asyncio
 import inspect
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -33,6 +34,10 @@ class ShellSyntaxError(ShellError):
 
 class ExpansionError(ShellError):
     """Signal a word expansion the shell cannot perform, which stops the script"""
+
+
+class UnboundVariableError(ExpansionError):
+    """Raise when ``set -u`` is on and an unset variable is expanded"""
 
 
 class UnsupportedBlockError(ShellError):
@@ -283,6 +288,15 @@ class PipeSink:
             self.queue.put_nowait(item)
 
 
+class ShellOption(StrEnum):
+    """Name the options ``set`` can turn on"""
+
+    ERREXIT = "errexit"
+    NOUNSET = "nounset"
+    XTRACE = "xtrace"
+    PIPEFAIL = "pipefail"
+
+
 class JobStatus(StrEnum):
     """Name what a background job is doing, as the fake ps prints it"""
 
@@ -324,6 +338,25 @@ class JobTable:
         self.next_pid += 1
         return job
 
+    def job_for_spec(self, spec: str) -> Job | None:
+        """Return the job a ``%`` job specification names, or None
+
+        Args:
+            spec: ``%N`` for the Nth job, ``%%`` or ``%+`` for the newest, ``%-`` for the one before it
+
+        Returns:
+            The job, or None when the specification matches nothing
+        """
+        ordered = list(self.jobs.values())
+        if spec in ("%%", "%+"):
+            return ordered[-1] if ordered else None
+        if spec == "%-":
+            return ordered[-2] if len(ordered) > 1 else None
+        number_text = spec.removeprefix("%")
+        if not number_text.isdigit() or int(number_text) < 1 or int(number_text) > len(ordered):
+            return None
+        return ordered[int(number_text) - 1]
+
     def running(self) -> list[Job]:
         """Return the jobs still running, in pid order"""
         return [job for job in self.jobs.values() if job.status == JobStatus.RUNNING]
@@ -355,6 +388,7 @@ class ShellState:
     write_output: Callable[[str], Any]
     write_error: Callable[[str], None]
     variables: dict[str, str] = field(default_factory=dict)
+    arrays: dict[str, dict[int, str]] = field(default_factory=dict)
     functions: dict[str, str] = field(default_factory=dict)
     exported_names: set[str] = field(default_factory=set)
     positional_arguments: list[str] = field(default_factory=list)
@@ -364,6 +398,14 @@ class ShellState:
     function_depth: int = 0
     job_table: JobTable = field(default_factory=JobTable)
     last_background_pid: int | None = None
+    started_at: float = field(default_factory=time.monotonic)
+    aliases: dict[str, str] = field(default_factory=dict)
+    directory_stack: list[Path] = field(default_factory=list)
+    options: set[ShellOption] = field(default_factory=set)
+    readonly_names: set[str] = field(default_factory=set)
+    local_scopes: list[dict[str, tuple[str | None, dict[int, str] | None]]] = field(default_factory=list)
+    condition_depth: int = 0
+    read_line: Callable[[], Any] | None = None
 
     def __post_init__(self):
         """Build the output sink and wrap the error sink so terminal output is recorded as well as streamed"""
@@ -406,6 +448,7 @@ class ShellState:
             write_output=self.write_output,
             write_error=self.write_error,
             variables=dict(self.variables),
+            arrays={name: dict(elements) for name, elements in self.arrays.items()},
             functions=dict(self.functions),
             exported_names=set(self.exported_names),
             positional_arguments=list(self.positional_arguments),
@@ -414,6 +457,14 @@ class ShellState:
             function_depth=self.function_depth,
             job_table=self.job_table,
             last_background_pid=self.last_background_pid,
+            started_at=self.started_at,
+            aliases=dict(self.aliases),
+            directory_stack=list(self.directory_stack),
+            options=set(self.options),
+            readonly_names=set(self.readonly_names),
+            local_scopes=[dict(scope) for scope in self.local_scopes],
+            condition_depth=self.condition_depth,
+            read_line=self.read_line,
         )
         copied.output_sink = self.output_sink
         copied.write_error = self.write_error

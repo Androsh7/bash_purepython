@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0
+
+### Added
+
+- `bash_purepython.continuation.script_needs_more_lines`, which tells an interactive host whether the lines
+  typed so far leave a quote, heredoc, `$( )`, group, `[[ ]]` or compound command open or end in `\`, `|`,
+  `&&` or `||`, so it can prompt for another line; `PyodideSession.needs_more` exposes it and the example
+  terminal uses it in place of its own check. The live suite compares it with `bash -n` on each fragment
+- Commands ported from the old scripts onto the `Command` interface: `sort`, `tail`, `tar`, `tee`, `touch`,
+  `tr`, `tree`, `uniq`, `unzip`, `wc`, `which`, `whoami`, `zip`
+- New commands: `base64`, `chmod`, `column`, `df`, `diff`, `du`, `expr`, `file`, `fold`, `hostname`, `id`,
+  `less`, `md5sum`, `mktemp`, `more`, `od`, `paste`, `sed` (`s///` with flags and groups, `-n`, `-e`, `-E`,
+  `-i`, `p`, `d`, `q`, `=`, `a`, `i`, `c`, `y`, groups, line, regex and range addresses), `sha1sum`,
+  `sha256sum`, `sha512sum`, `stat`, `uname`, `xxd`
+- Builtins: `read` (`-r`, `-p`, `-a`, `-d`, `-n`, one line at a time from a pipe, here-string, file or the
+  host's terminal), `shift`, `set` (`--`, `-e`, `-u`, `-x`, `-o pipefail`), `local`, `eval`, `type`,
+  `command`, `alias`, `unalias`, `pushd`, `popd`, `dirs`, `let`, `declare`, `typeset`, `readonly`, `hash`,
+  `xargs` (`-n`, `-I`, `-0`, `-d`, `-t`), and `printf -v`. `exec`, `trap` and `getopts` say they are not
+  supported instead of being unknown
+- Syntax: `>&2`, `1>&2`, `>&1`, `2>&2`, `>&-` and `2>&-`; `case`/`esac` with `;;`, `;&` and `;;&`;
+  `for (( ; ; ))`; brace expansion (`{a,b}`, `{1..5}`, `{01..03}`, `{a..e}`, `{1..10..2}`, nested);
+  ANSI-C quoting `$'...'`; `IFS` word splitting; the parameter operators `${x#} ${x##} ${x%} ${x%%}
+  ${x/} ${x//} ${x/#} ${x/%} ${x^} ${x^^} ${x,} ${x,,} ${!x} ${x:offset:length}`; indexed arrays
+  (`a=(1 2)`, `a+=(3)`, `a[5]=x`, `${a[i]}`, `${a[@]}`, `"${a[@]}"`, `${#a[@]}`, `${!a[@]}`, slices and
+  operators on `[@]`, `unset a[i]`, `BASH_REMATCH` from `[[ =~ ]]`); `$$`, `$PPID`, `$RANDOM`, `$SECONDS`,
+  `$SHELL` and `$BASH_VERSION`
+- Options on existing commands: `head -n -N`, `cat -v -A -E -T -e -t -s -b`, `env -i -u NAME=VALUE`,
+  `grep -o -w -x -A -B -C -r`, `ls -R` in GNU layout, `kill %N`, `wait %N`
+- `help` prints a one-line summary next to every command, builtin and host command; `help -s` prints the
+  names alone. Every `Command` declares a `summary`
+- `cd -` prints the directory it returns to, and `jobs` prints bash's `[1]+  Running` layout
+
+### Fixed
+
+- A here-document inside `$( )` belongs to the command in the substitution instead of being run as commands
+- A builtin whose output is redirected or piped (`jobs > f`, `eval 'echo x' | cat`) now sends it there
+  rather than straight to the terminal
+- Files written by `>` and `>>` keep `\n` line ends on Windows hosts instead of gaining `\r\n`
+- The engine exits with 127 on an unbound variable under `set -u`, as bash does
+
+### Changed
+
+- `PyodideSession` accepts the host commands as a mapping of names to summaries as well as a list, and
+  gives the shell state a `read_line` callback that reads the terminal through standard input
+- The splitter no longer reads `name=(...)` as a function definition
+
 ## 0.4.0
 
 ### Added

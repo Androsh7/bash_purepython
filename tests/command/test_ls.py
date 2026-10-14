@@ -177,10 +177,54 @@ def test_ls_size_flag_prefixes_each_entry_with_its_blocks(shell: ShellHarness, l
 
 
 def test_ls_recursive_lists_descendants(shell: ShellHarness, listing_tree: None) -> None:
-    """Check that -R includes nested files with their relative paths"""
+    """Check that -R prints every directory under its own header, separated by blank lines"""
     run = shell.run("ls -R")
 
-    assert "sub/c.txt" in run.stdout.split()
+    assert run.stdout == ".:\na.txt  b.txt  sub\n\n./sub:\nc.txt\n"
+
+
+def test_ls_recursive_headers_use_the_path_as_written(shell: ShellHarness, listing_tree: None) -> None:
+    """Check that a named directory heads its listing and prefixes the ones below it"""
+    (shell.state.cwd / "sub" / "deeper").mkdir()
+    (shell.state.cwd / "sub" / "deeper" / "d.txt").write_text("d", encoding="utf-8")
+
+    run = shell.run("ls -R sub")
+
+    assert run.stdout == "sub:\nc.txt  deeper\n\nsub/deeper:\nd.txt\n"
+
+
+def test_ls_recursive_skips_hidden_directories_unless_all(shell: ShellHarness, listing_tree: None) -> None:
+    """Check that a dot directory is neither listed nor descended into without -a"""
+    (shell.state.cwd / ".secret").mkdir()
+    (shell.state.cwd / ".secret" / "s.txt").write_text("s", encoding="utf-8")
+
+    run = shell.run("ls -R")
+
+    assert ".secret" not in run.stdout
+    assert "./.secret:" not in run.stdout.splitlines()
+
+
+def test_ls_recursive_with_all_descends_into_hidden_directories_but_not_dots(
+    shell: ShellHarness, listing_tree: None
+) -> None:
+    """Check that -Ra lists a dot directory's content once and never recurses into . or .."""
+    (shell.state.cwd / ".secret").mkdir()
+    (shell.state.cwd / ".secret" / "s.txt").write_text("s", encoding="utf-8")
+
+    run = shell.run("ls -Ra")
+
+    headers = [line for line in run.stdout.splitlines() if line.endswith(":")]
+    assert headers == [".:", "./.secret:", "./sub:"]
+
+
+def test_ls_recursive_long_listing_prints_a_total_per_directory(shell: ShellHarness, listing_tree: None) -> None:
+    """Check that -lR formats each directory the way -l does"""
+    run = shell.run("ls -lR")
+
+    lines = run.stdout.splitlines()
+    assert lines[0] == ".:"
+    assert lines[1].startswith("total ")
+    assert lines[lines.index("./sub:") + 1].startswith("total ")
 
 
 def test_ls_lists_named_files_before_named_directories_under_headers(shell: ShellHarness, listing_tree: None) -> None:

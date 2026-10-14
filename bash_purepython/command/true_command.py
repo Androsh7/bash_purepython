@@ -9,6 +9,7 @@ class TrueCommand(Command):
     """Succeed without output"""
 
     name = "true"
+    summary = "do nothing, successfully"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

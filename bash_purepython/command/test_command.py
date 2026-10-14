@@ -236,6 +236,7 @@ class TestCommand(Command):
 
     __test__ = False
     name = "test"
+    summary = "evaluate a conditional expression"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 
@@ -255,6 +256,7 @@ class BracketCommand(Command):
     """Evaluate a conditional expression written between square brackets"""
 
     name = "["
+    summary = "evaluate a conditional expression, closed by ]"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

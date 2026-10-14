@@ -47,6 +47,7 @@ class EchoCommand(Command):
     """Write the arguments to standard output"""
 
     name = "echo"
+    summary = "display a line of text"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

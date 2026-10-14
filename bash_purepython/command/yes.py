@@ -27,6 +27,7 @@ class YesCommand(Command):
     """Repeat a line forever"""
 
     name = "yes"
+    summary = "output a string repeatedly until killed"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 

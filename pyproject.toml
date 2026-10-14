@@ -51,6 +51,7 @@ ignore = [
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
+"tests/test_live_bash.py" = ["E501"]  # one script per line, however long bash makes it
 "tests/**" = [
     "D",       # Docstring on every module, class, function, method
     "INP001",  # __init__.py in every directory 

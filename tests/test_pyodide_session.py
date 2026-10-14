@@ -184,7 +184,7 @@ def test_host_command_receives_input_piped_into_it(tmp_path: Path, host: FakeHos
 
 def test_host_command_receives_input_redirected_from_a_file(tmp_path: Path, host: FakeHost) -> None:
     """Check that a file named after < is handed to the host command, which stays attached"""
-    (tmp_path / "answers.txt").write_text("bob\n", encoding="utf-8")
+    (tmp_path / "answers.txt").write_text("bob\n", encoding="utf-8", newline="\n")
     session = build_session(tmp_path, host)
 
     run(session, "fetchy < answers.txt")
@@ -358,3 +358,17 @@ def test_repl_discard_forgets_an_unfinished_block(tmp_path: Path, host: FakeHost
     session.repl_discard()
 
     assert session.console.buffer == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("for n in 1 2", True), ("for n in 1 2; do echo $n; done", False), ('echo "open', True), ("echo done", False)],
+    ids=["open_loop", "closed_loop", "open_quote", "plain"],
+)
+def test_needs_more_reports_whether_the_text_is_finished(
+    tmp_path: Path, host: FakeHost, text: str, expected: bool
+) -> None:
+    """Check that the host can ask whether the lines typed so far form a complete command"""
+    session = build_session(tmp_path, host)
+
+    assert session.needs_more(text) is expected

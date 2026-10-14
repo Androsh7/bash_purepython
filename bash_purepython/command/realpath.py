@@ -10,6 +10,7 @@ class RealpathCommand(Command):
     """Print the resolved absolute form of each path"""
 
     name = "realpath"
+    summary = "print the resolved path"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

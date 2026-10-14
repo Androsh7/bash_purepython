@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 # Project libraries
+from bash_purepython.continuation import script_needs_more_lines
 from tests.conftest import build_harness
 
 BASH_PATH = shutil.which("bash")
@@ -694,6 +695,71 @@ SCRIPTS = [
     "printf '%s\\n' 'echo said' > say.sh; bash say.sh > out.txt; cat out.txt; echo \"got $(bash say.sh)\"",
     "printf '%s\\n' 'echo $1' 'echo $#' > a.sh; source a.sh x y; f() { source a.sh; }; f p q r",
     "bash missing.sh 2>/dev/null; echo $?; source missing.sh 2>/dev/null; echo $?",
+    "echo a; echo b >&2 2>/dev/null; echo c 1>&2 2>&1; echo d >&1",
+    "x=$(cat <<EOF\nhello\nEOF\n); echo $x; echo $(cat <<EOF | tr a-z A-Z\nabc\nEOF\n) after",
+    "echo {a,b}{1,2} {1..5} {5..1} {01..03} {a..e} x{,a} {a} pre{a,b}post '{a,b}'",
+    "echo {1..10..3} {a,b{1,2}} {e..a..2}; printf '[%s]' {,a}; echo",
+    "x=abcabc; echo ${x#ab} ${x##*a} ${x%bc} ${x%%c*} ${x/b/X} ${x//b/X} ${x/#a/Z} ${x/%c/Z} ${x/b}",
+    "x=abc; echo ${x^} ${x^^} ${x,} ${x^^[ab]}; y=ABC; echo ${y,,} ${y,}; z=x; x=val; echo ${!z}",
+    "x=abcdef; echo ${x:1} ${x:1:2} ${x: -2} ${x:(-3):2} ${x:1:-1}; echo ${#x}",
+    "echo $'a\\tb' | cat -A; echo $'x\\x41\\101' $'it\\'s'",
+    "IFS=,; x=a,b,,c; for w in $x; do echo [$w]; done; x=,a,; for w in $x; do echo [$w]; done",
+    'IFS=:; set -- a b; echo "$*"; echo "$@"; unset IFS; x=\'a  b\'; for w in $x; do echo [$w]; done',
+    "a=(1 2 3); echo ${a[1]} ${#a[@]} ${a[@]} ${a[*]} ${a[-1]} ${!a[@]} $a; a+=(4); a[6]=7; echo ${a[@]} ${#a[@]} ${!a[@]}",
+    'a=(x y z); for v in "${a[@]}"; do echo [$v]; done; echo ${#a[1]}; b=(); echo [${b[@]}] ${#b[@]}; for v in "${b[@]}"; do echo never; done',
+    "a=(a b c d); echo ${a[@]:1:2} ${a[@]/b/B} ${a[@]^^} ${a[@]#a}; a=('a b' c); for v in \"${a[@]}\"; do echo [$v]; done",
+    "a=(1 2 3); unset a[1]; echo ${a[@]} ${!a[@]}; unset a; echo [${a[@]}]; s=abc; s[1]=Q; echo ${s[@]}; t=hi; t+=there; echo $t",
+    "a=(1 2 3); echo ${a[$((1+1))]} ${a[1+1]}; i=0; echo ${a[i]}; [[ abc =~ ^a(b)(c) ]] && echo ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}",
+    "case abc in a*) echo glob;; *) echo other;; esac; x=hello; case $x in hi|hello) echo hi;; *) echo no;; esac",
+    "case 1 in 1) echo one;& 2) echo two;; 3) echo three;; esac; case 1 in 1) echo one;;& [0-9]) echo digit;; *) echo never;; esac",
+    "case b in\n  a) echo a;;\n  b|c) echo bc\n     echo more;;\n  *) echo default\nesac; case x in y) echo no;; esac; echo $?",
+    "case x in (x) echo paren;; esac; case x in x) false;; esac; echo $?; case x in x) echo last; esac",
+    "case $(echo z) in z) echo sub;; esac; case x in x) case y in y) echo nested;; esac;; esac; case x in x) echo piped;; esac | tr a-z A-Z",
+    "for ((i=0;i<3;i++)); do echo $i; done; for (( i = 10; i > 7; i-- )); do echo $i; done; echo $i; for ((;;)); do echo once; break; done",
+    "read x <<< hello; echo [$x]; read a b <<< 'one two three'; echo [$a] [$b]; read <<< plain; echo $REPLY",
+    "read -a words <<< 'x y z'; echo ${words[1]} ${#words[@]}; read -d , x <<< 'a,b'; echo [$x]; read -n 2 x <<< abcd; echo [$x]",
+    "while read l; do echo got $l; done <<< $'p\\nq'; printf 'l1\\nl2\\n' > f; while read -r l; do echo \"<$l>\"; done < f",
+    "printf 'a\\nb\\n' | while read l; do echo piped $l; done; yes | while read l; do echo $l; break; done; echo after",
+    "read x < /dev/null; echo $?; IFS=: read a b <<< 'u:v'; echo $a $b; read -r x <<< 'a\\tb'; echo $x; read x <<< 'a\\tb'; echo $x",
+    "f() { shift; echo $1 $#; }; f a b c; set -- x y z; echo $2 $#; shift 2; echo $1; shift 5; echo $?",
+    "set -e; echo before; false; echo after",
+    "set -e; false || echo recovered; false && echo no; if false; then :; fi; while false; do :; done; ! false; echo done",
+    "set -u; echo ${missing:-default}; echo $missing; echo after",
+    "set -o pipefail; false | true; echo $?; set +o pipefail; false | true; echo $?; true | false | true; echo $?",
+    "x=outer; f() { local x=inner; echo $x; }; f; echo $x; g() { local y; y=1; }; g; echo [${y-unset}]",
+    "arr=(1 2 3); h() { local -a arr; arr=(9); echo ${#arr[@]}; }; h; echo ${#arr[@]}; local z=1 2>/dev/null; echo $?",
+    "eval \"echo evaled $(echo sub)\"; eval x=5; echo $x; eval; echo $?; let x=1+2 y=x*2; echo $x $y; let 'z = 0'; echo $?",
+    "f() { :; }; type -t f cat cd if; type cat; type cd; type -p cat; type nothing 2>/dev/null; echo $?",
+    "command -v echo cd; command -v nothing; echo $?; echo() { printf 'shadow\\n'; }; command echo real; echo x",
+    "declare -i n=2+3; echo $n; declare -a arr; arr+=(x); echo ${arr[0]}; declare -x EXP=1; env | grep ^EXP=; typeset v=1; echo $v",
+    "x=outer; f() { declare x=inner; declare -g g=global; }; f; echo $x $g; f() { echo body; }; declare -F",
+    "readonly r=1; echo $r; printf -v v 'x%03d' 7; echo [$v]",
+    "mkdir sub; pushd sub > /dev/null; pwd | grep -c sub; popd > /dev/null; pwd | grep -c sub; dirs | grep -c sub; cd sub; cd - | grep -c h",
+    "printf 'b\\na\\nb\\n' | sort | uniq -c; printf '3\\n10\\n2\\n' | sort -n; printf 'b\\na\\n' | sort -r; printf 'a\\na\\nb\\n' | uniq -d",
+    "echo hello | tr a-z A-Z; echo hello | tr -d l; echo aabbcc | tr -s ab; echo 'a-b' | tr '-' _; echo abc | tr '[:lower:]' '[:upper:]'",
+    "seq 5 | tail -n 2; seq 5 | tail -n +4; printf 'abcdef' | tail -c 3; echo; seq 12 | head -n -10",
+    "echo a b | wc; echo abc | wc -c; printf 'a\\nb' | wc -l; echo 'one two' | wc -w; printf 'x\\ny\\n' > f; wc -l f",
+    "echo hi | tee f1 f2 > /dev/null; cat f1 f2; echo more | tee -a f1 > /dev/null; cat f1; yes | tee f3 | head -n 2",
+    "touch t; [ -f t ] && echo created; echo x > t2; touch t2; cat t2; mkdir d; touch -c nope; ls d",
+    "which cat; which cat nothing 2>/dev/null; echo $?; echo a | xargs echo b; printf '1\\n2\\n3\\n' | xargs -n 2 echo; printf 'a b' | xargs -I {} echo [{}]",
+    "echo hi | sed s/hi/bye/; printf 'a\\nb\\nc\\n' | sed -n 2p; printf 'a\\nb\\n' | sed 1d; echo aaa | sed 's/a/b/g'; echo abc | sed -E 's/(b)/[\\1]/'",
+    "printf 'x\\nstart\\ny\\nend\\nz\\n' | sed '/start/,/end/d'; echo axa | sed 's/a/y/2'; printf 'a\\nb\\n' | sed '$!d'; printf 'a\\nb\\n' | sed =; echo abc | sed 'y/abc/ABC/'",
+    "printf 'one\\ntwo\\n' > f; sed -i 's/one/1/' f; cat f; printf 'a\\nb\\nc\\n' | sed '2a added'; printf 'a\\nb\\n' | sed -n '/b/p'; yes | sed 2q",
+    "echo text | base64; echo dGV4dAo= | base64 -d; printf 'abc' | base64 -w 0; echo; echo abc | md5sum | cut -c1-32; echo abc | sha256sum | cut -c1-64; echo abc | sha1sum | cut -c1-40",
+    "printf 'hello world' | xxd; printf 'hello' | xxd -p; printf '68656c6c6f' | xxd -r -p; echo; printf 'ab' | od -c; printf 'ab' | od -An -tx1",
+    "echo hi > f; stat -c '%s %n' f; echo 1 2 3 | fold -w 3; printf 'a b c' | fold -s -w 3; echo; printf 'a\\nb\\n' > p1; printf '1\\n2\\n' > p2; paste p1 p2; paste -d, p1 p2; paste -s p1",
+    "printf 'a\\nb\\n' > d1; printf 'a\\nc\\n' > d2; diff d1 d2; echo $?; diff d1 d1; echo $?; diff -q d1 d2; diff -u d1 d2 | tail -n +3",
+    "expr 1 + 2; expr 2 \\* 3; expr 7 % 3; expr 1 = 1; expr abc : 'a\\(b\\)'; expr length hello; expr substr hello 2 3; expr index hello l; expr 0; echo $?",
+    "uname -s | wc -l; echo a | cat",
+    "mkdir -p d/e; echo x > d/f; du -b d/f; echo hi > t; stat -c %s t",
+    "mkdir t; echo hi > t/f; tar czf t.tgz t; rm -r t; tar xzf t.tgz; cat t/f; tar tf t.tgz; tar czf - t | tar tzf - | head -n 1",
+    "echo hi > f; file f | cut -d: -f2 | cut -c1-6; mkdir d; file d; printf '\\x89PNG\\r\\n\\x1a\\n' > p; file p | grep -c PNG",
+    "printf 'a\\tb\\n' | cat -T; printf 'a\\n\\n\\nb\\n' | cat -s; printf 'a\\n' | cat -A; env -i X=1 env; echo one two | column -t",
+    "printf 'a\\nb\\nc\\n' | grep -A1 a; printf 'a\\nb\\nc\\n' | grep -B1 c; printf 'xa\\nb\\nxc\\nd\\ne\\nxf\\n' | grep -A1 x; echo 'foo bar' | grep -o o; echo 'foo food' | grep -ow foo; echo abc | grep -x abc",
+    "mkdir -p a/b; echo x > a/f; echo y > a/b/g; ls -R a | cat; grep -r x a | sort; find a -name g",
+    "f() { echo fn; }; f | cat; ls nothing 2>&1 | grep -c nothing; echo $(( 2 ** 10 )) ${#@}",
+    "mkdir -p m; cd m; echo $PWD | grep -c m; cd ..; pushd m > /dev/null; dirs | grep -c m; popd > /dev/null; echo ok",
+    "echo $$ > /dev/null; echo $PPID > /dev/null; echo ${BASH_VERSION%%.*}; echo $RANDOM | grep -qE '^[0-9]+$' && echo random; echo $SECONDS",
 ]
 
 
@@ -736,3 +802,73 @@ def test_engine_matches_real_bash(script: str, tmp_path: Path) -> None:
     run = shell.run(script)
 
     assert (run.stdout, run.exit_code) == (expected_stdout, expected_exit_code)
+
+
+CONTINUATION_FRAGMENTS = [
+    "for i in 1 2 3",
+    "for i in 1 2 3; do echo $i; done",
+    "if true",
+    "if true; then echo y",
+    "if true; then echo y; fi",
+    "while true; do",
+    "case x in",
+    "case x in x) echo m;; esac",
+    "f() {",
+    "f() { echo a; }",
+    "function f {",
+    "( echo a",
+    "( echo a )",
+    "{ echo a",
+    "echo a |",
+    "echo a | cat",
+    "echo a &&",
+    "echo a ||",
+    "echo a |&",
+    "echo a &",
+    'echo "abc',
+    "echo 'abc",
+    "echo $(echo a",
+    "echo $(echo a)",
+    "echo `echo a",
+    "echo $((1+",
+    "[[ a == a",
+    "[[ a == a ]]",
+    "cat <<EOF",
+    "cat <<EOF\nabc",
+    "cat <<EOF\nabc\nEOF",
+    "echo a\necho b",
+    "echo a # a | comment",
+]
+INCOMPLETE_INPUT_MARKERS = ("unexpected end of file", "unexpected EOF", "delimited by end-of-file")
+
+
+def real_bash_wants_more(fragment: str) -> bool:
+    """Return whether real bash reports a fragment as cut short when asked only to parse it
+
+    Args:
+        fragment: The script text
+
+    Returns:
+        True when bash reaches the end of the input inside an open construct
+    """
+    completed = subprocess.run(
+        [BASH_PATH or "bash", "-n"],
+        input=fragment,
+        env={**BASH_ENVIRONMENT, "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=BASH_TIMEOUT_S,
+    )
+    return any(marker in completed.stderr for marker in INCOMPLETE_INPUT_MARKERS)
+
+
+@pytest.mark.live_bash_test
+@pytest.mark.skipif(BASH_PATH is None, reason="needs a bash binary on PATH")
+@pytest.mark.parametrize(
+    "fragment", CONTINUATION_FRAGMENTS, ids=[f"fragment_{index}" for index in range(len(CONTINUATION_FRAGMENTS))]
+)
+def test_continuation_check_matches_real_bash(fragment: str) -> None:
+    """Check that the engine asks for another line exactly when bash finds the input cut short"""
+    assert script_needs_more_lines(fragment) is real_bash_wants_more(fragment)

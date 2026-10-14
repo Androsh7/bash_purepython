@@ -6,21 +6,18 @@ continuation prompt while a quote or here-document is still open
 """
 
 # Standard libraries
-import re
 import sys
 from pathlib import Path
 
 # Project libraries
+from bash_purepython.continuation import script_needs_more_lines
 from bash_purepython.execute_command import ShellRunner
-from bash_purepython.shell_state import ControlFlowSignal, ExitShell, ShellState, ShellSyntaxError
-from bash_purepython.words import tokenize_simple_command
+from bash_purepython.shell_state import ControlFlowSignal, ExitShell, ShellState
 
 PROMPT_SUFFIX = "$ "
 CONTINUATION_PROMPT = "> "
 HOME_SHORTHAND = "~"
 EXIT_CODE_INTERRUPTED = 130
-HEREDOC_OPERATOR_PATTERN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w.]*)\1")
-UNCLOSED_MARKER = "unclosed"
 
 
 def prompt_for(state: ShellState) -> str:
@@ -40,28 +37,6 @@ def prompt_for(state: ShellState) -> str:
     return f"{shown.as_posix()}{PROMPT_SUFFIX}"
 
 
-def needs_more_lines(text: str) -> bool:
-    """Return whether the lines typed so far leave a quote or a here-document open
-
-    Args:
-        text: The lines entered so far, joined by newlines
-
-    Returns:
-        True when another line should be read before the text is run
-    """
-    lines = text.split("\n")
-    for delimiter_match in HEREDOC_OPERATOR_PATTERN.finditer(lines[0]):
-        if delimiter_match.group(2) not in lines[1:]:
-            return True
-    if text.endswith("\\"):
-        return True
-    try:
-        tokenize_simple_command(text.replace("\n", " "))
-    except ShellSyntaxError as error:
-        return UNCLOSED_MARKER in str(error)
-    return False
-
-
 def read_command(state: ShellState) -> str | None:
     """Read one complete command, asking for further lines while it is unfinished
 
@@ -73,7 +48,7 @@ def read_command(state: ShellState) -> str | None:
     """
     try:
         text = input(prompt_for(state))
-        while needs_more_lines(text):
+        while script_needs_more_lines(text):
             text += "\n" + input(CONTINUATION_PROMPT)
     except EOFError:
         return None

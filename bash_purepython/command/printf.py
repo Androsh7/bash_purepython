@@ -117,6 +117,9 @@ def parse_float(text: str, state: ShellState) -> tuple[float, bool]:
         return 0.0, False
 
 
+VARIABLE_OPTION = "-v"
+
+
 class PrintfFormatter:
     """Apply one format string to a list of arguments, reusing the format until they run out"""
 
@@ -234,6 +237,7 @@ class PrintfCommand(Command):
     """Format and print arguments"""
 
     name = "printf"
+    summary = "format and print data"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 
@@ -247,11 +251,19 @@ class PrintfCommand(Command):
             The formatted text and an exit code reflecting any invalid arguments
         """
         arguments = list(invocation.arguments)
+        target_variable: str | None = None
+        if len(arguments) >= 2 and arguments[0] == VARIABLE_OPTION:
+            target_variable = arguments[1]
+            arguments = arguments[2:]
         if arguments and arguments[0] == "--":
             arguments.pop(0)
         if not arguments:
-            invocation.state.write_error("printf: usage: printf format [arguments]\n")
+            invocation.state.write_error("printf: usage: printf [-v var] format [arguments]\n")
             return CommandResult(stdout="", exit_code=EXIT_CODE_USAGE_ERROR)
         formatter = PrintfFormatter(arguments[0], arguments[1:], invocation.state)
         text = formatter.format_all()
+        if target_variable is not None:
+            invocation.state.arrays.pop(target_variable, None)
+            invocation.state.variables[target_variable] = text
+            return CommandResult(stdout="", exit_code=formatter.exit_code)
         return CommandResult(stdout=text, exit_code=formatter.exit_code)

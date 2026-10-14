@@ -39,6 +39,7 @@ OR_OPERATOR = "||"
 OPENING_PARENTHESIS = "("
 CLOSING_PARENTHESIS = ")"
 REGEX_OPERATOR = "=~"
+REGEX_MATCH_ARRAY_NAME = "BASH_REMATCH"
 VARIABLE_SET_TEST = "-v"
 PATTERN_OPERATORS = frozenset({"=", "==", "!="})
 ORDER_OPERATORS = frozenset({"<", ">"})
@@ -370,9 +371,14 @@ class ConditionalEvaluator:
             return matched != (operator == "!=")
         if operator == REGEX_OPERATOR:
             try:
-                return re.search(await self._pattern(right, re.escape), left_value) is not None
+                match = re.search(await self._pattern(right, re.escape), left_value)
             except re.error as error:
                 raise ShellSyntaxError(f"invalid regular expression: {error}") from error
+            if match is not None:
+                self.state.arrays[REGEX_MATCH_ARRAY_NAME] = {
+                    index: group or "" for index, group in enumerate((match.group(0), *match.groups()))
+                }
+            return match is not None
         right_value = await self._value(right)
         if operator in ORDER_OPERATORS:
             return left_value < right_value if operator == "<" else left_value > right_value
