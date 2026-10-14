@@ -10,6 +10,7 @@ class PwdCommand(Command):
     """Print the shell's current directory"""
 
     name = "pwd"
+    summary = "print the working directory"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

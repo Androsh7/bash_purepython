@@ -46,24 +46,38 @@ and adding an instance to a `CommandRegistry`. A command's `run` may be a plain
 function or a coroutine, so it can await a browser promise such as `fetch`.
 
 Supported so far: pipelines (`|`, `|&`, `!`), `&&`/`||` lists, `if`/`elif`/`else`,
-`for`, `while`, `until`, functions, subshells, brace groups, background jobs,
-redirections on commands and on compound commands (`>`, `>>`, `<`, `2>`, `2>>`,
-`2>&1`, `&>`, heredocs, here-strings, `/dev/null`), parameter and command
-substitution, arithmetic (`$(( ))` and the `(( ))` command), the `[[ ]]`
-conditional command, pathname expansion
-(`*`, `?`, `[...]`), and the builtins `cd`, `export`, `unset`, `exit`, `return`,
-`break`, `continue`, `wait`, `jobs`. Script files run with `bash file`, `sh file`,
+`for` (over words and `for (( ; ; ))`), `while`, `until`, `case`, functions, subshells, brace groups,
+background jobs, redirections on commands and on compound commands (`>`, `>>`, `<`, `2>`, `2>>`,
+`2>&1`, `>&2`, `&>`, `>&-`, heredocs, here-strings, `/dev/null`), parameter and command
+substitution with the `${x#}`, `${x%}`, `${x/}`, `${x^^}`, `${!x}` and `${x:offset:length}` operators,
+indexed arrays, brace expansion, ANSI-C quoting (`$'...'`), `IFS` word splitting, arithmetic
+(`$(( ))` and the `(( ))` command), the `[[ ]]` conditional command with `BASH_REMATCH`, pathname
+expansion (`*`, `?`, `[...]`), aliases, and the builtins `cd`, `pushd`, `popd`, `dirs`, `export`, `unset`,
+`exit`, `return`, `break`, `continue`, `wait`, `jobs`, `read`, `shift`, `set` (`-e`, `-u`, `-x`,
+`-o pipefail`, `--`), `local`, `eval`, `type`, `command`, `alias`, `unalias`, `let`, `declare`, `typeset`,
+`readonly`, `hash`, `xargs`. Script files run with `bash file`, `sh file`,
 `bash -c text`, a script on standard input, or by a path such as `./file`, each
 against a copy of the state; `source file` and `. file` run one against the live state.
-Commands shipped: `[`, `basename`, `cat`, `cp`, `cut`, `date`, `dirname`, `echo`,
-`env`, `false`, `find`, `grep`, `gunzip`, `gzip`, `head`, `help`, `kill`, `ls`,
-`mkdir`, `mv`, `nl`, `printf`, `ps`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`,
-`seq`, `sleep`, `test`, `true`, `yes`. Every command takes `--help`; `-h` is left free
-for the commands that use it, such as `ls -h` and `grep -h`.
+Commands shipped: `[`, `base64`, `basename`, `cat`, `chmod`, `column`, `cp`, `cut`, `date`, `df`, `diff`,
+`dirname`, `du`, `echo`, `env`, `expr`, `false`, `file`, `find`, `fold`, `grep`, `gunzip`, `gzip`, `head`,
+`help`, `hostname`, `id`, `kill`, `less`, `ls`, `md5sum`, `mkdir`, `mktemp`, `more`, `mv`, `nl`, `od`,
+`paste`, `printf`, `ps`, `pwd`, `realpath`, `rev`, `rm`, `rmdir`, `sed`, `seq`, `sha1sum`, `sha256sum`,
+`sha512sum`, `sleep`, `sort`, `stat`, `tail`, `tar`, `tee`, `test`, `touch`, `tr`, `tree`, `true`, `uname`,
+`uniq`, `unzip`, `wc`, `which`, `whoami`, `xxd`, `yes`, `zip`. Every command takes `--help`; `-h` is left
+free for the commands that use it, such as `ls -h` and `grep -h`. `help` lists them all with a summary.
 
-Known limitations: `case`, `select` and process substitution are not
-implemented; a `$( )` substitution that never stops
-writing is cut off at the executor's output limit.
+`select` prints its menu and `PS3` prompt to standard error and reads the choice from standard input, laid
+out in columns the way bash does. Process substitution `<( )` and `>( )` hands the command a temporary file
+in place of a pipe: an input substitution is filled before the command runs, an output substitution is fed
+to its script once the command's block has finished, and the file is removed afterwards.
+
+Known limitations: `exec`, `trap` and `getopts` are not implemented; `>&2` followed by a later `2>`
+redirection is resolved in order, but a `|&` pipe combined with `>&2` is not; a `$( )` substitution that
+never stops writing, such as `echo "$(yes)"`, is stopped at the executor's output limit (16 MiB by default)
+and fails the command with an error, where real bash would hang.
+
+`bash_purepython.continuation.script_needs_more_lines` tells an interactive host whether the lines typed so
+far still leave a quote, heredoc, group or compound command open, so it can prompt for another line.
 
 ## Example terminal
 

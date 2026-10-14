@@ -17,6 +17,7 @@ class PsCommand(Command):
     """
 
     name = "ps"
+    summary = "report the background jobs"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

@@ -28,6 +28,7 @@ class DirnameCommand(Command):
     """Strip the last component from a file name"""
 
     name = "dirname"
+    summary = "strip the last component from file names"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

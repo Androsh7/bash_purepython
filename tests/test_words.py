@@ -93,7 +93,7 @@ def expand(text: str, state: ShellState | None = None) -> list[str]:
         ("echo ''", ["echo", ""]),
         ("echo \\$HOME", ["echo", "$HOME"]),
         ("echo '$HOME'", ["echo", "$HOME"]),
-        ("echo {a,b}", ["echo", "{a,b}"]),
+        ("echo '{a,b}' {a}", ["echo", "{a,b}", "{a}"]),
         ("echo a#b", ["echo", "a#b"]),
     ],
     ids=[
@@ -333,7 +333,7 @@ def test_tokenize_reads_two_heredocs_in_order() -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["echo 'open", 'echo "open', "echo $(open", "echo >", "echo >&2", "echo (a)", "echo `open"],
+    ["echo 'open", 'echo "open', "echo $(open", "echo >", "cat <&3", "echo (a)", "echo `open"],
     ids=[
         "unclosed_single",
         "unclosed_double",
@@ -348,3 +348,34 @@ def test_tokenize_rejects_malformed_text(text: str) -> None:
     """Check that malformed quoting and operators raise a syntax error"""
     with pytest.raises(ShellSyntaxError):
         tokenize_simple_command(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_redirections"),
+    [
+        ("echo a >&2", [(RedirectionKind.STDOUT_TO_STDERR, "")]),
+        ("echo a 1>&2", [(RedirectionKind.STDOUT_TO_STDERR, "")]),
+        ("echo a >&1", []),
+        ("echo a 2>&2", []),
+        ("echo a >&-", [(RedirectionKind.WRITE_STDOUT, "/dev/null")]),
+        ("echo a 2>&-", [(RedirectionKind.WRITE_STDERR, "/dev/null")]),
+        ("echo a 2>&1 >&2", [(RedirectionKind.STDERR_TO_STDOUT, ""), (RedirectionKind.STDOUT_TO_STDERR, "")]),
+    ],
+    ids=[
+        "stdout_to_stderr",
+        "explicit_stdout_to_stderr",
+        "stdout_to_itself",
+        "stderr_to_itself",
+        "close_stdout",
+        "close_stderr",
+        "both_ways",
+    ],
+)
+def test_tokenize_reads_descriptor_duplications(
+    text: str, expected_redirections: list[tuple[RedirectionKind, str]]
+) -> None:
+    """Check that pointing one descriptor at another is recorded as the matching redirection"""
+    words, redirections, _ = tokenize_simple_command(text)
+
+    assert [word.raw_text() for word in words] == ["echo", "a"]
+    assert [(redirection.kind, redirection.target) for redirection in redirections] == expected_redirections

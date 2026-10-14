@@ -29,6 +29,7 @@ class BasenameCommand(Command):
     """Strip the directory and an optional suffix from a file name"""
 
     name = "basename"
+    summary = "strip directory and suffix from file names"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

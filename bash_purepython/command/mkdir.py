@@ -10,6 +10,7 @@ class MkdirCommand(Command):
     """Create directories"""
 
     name = "mkdir"
+    summary = "make directories"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

@@ -73,11 +73,15 @@ class CommandResult:
 
 
 class Command(ABC):
-    """Declare the kinds a command exchanges and how it runs"""
+    """Declare the kinds a command exchanges and how it runs
+
+    ``summary`` is the one-line description ``help`` prints next to the name
+    """
 
     name: ClassVar[str]
     input_kinds: ClassVar[frozenset[InputKind]]
     output_kinds: ClassVar[frozenset[OutputKind]]
+    summary: ClassVar[str] = ""
 
     @abstractmethod
     def run(self, invocation: CommandInvocation) -> CommandResult | Awaitable[CommandResult]:

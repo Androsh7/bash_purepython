@@ -32,9 +32,10 @@ def split_signal_options(arguments: list[str]) -> list[str]:
 
 
 class KillCommand(Command):
-    """Cancel background jobs by pid"""
+    """Cancel background jobs by pid or by ``%`` job specification"""
 
     name = "kill"
+    summary = "cancel a background job"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 
@@ -53,7 +54,10 @@ class KillCommand(Command):
             return CommandResult(stdout="", exit_code=EXIT_CODE_USAGE_ERROR)
         exit_code = EXIT_CODE_SUCCESS
         for pid_text in pid_texts:
-            job = invocation.state.job_table.jobs.get(int(pid_text)) if pid_text.isdigit() else None
+            if pid_text.startswith("%"):
+                job = invocation.state.job_table.job_for_spec(pid_text)
+            else:
+                job = invocation.state.job_table.jobs.get(int(pid_text)) if pid_text.isdigit() else None
             if job is None or job.status != JobStatus.RUNNING:
                 invocation.state.write_error(f"kill: {pid_text}: no such process\n")
                 exit_code = EXIT_CODE_FAILURE

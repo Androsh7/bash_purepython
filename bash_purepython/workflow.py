@@ -21,6 +21,7 @@ class RedirectionKind(StrEnum):
     WRITE_STDERR = "2>"
     APPEND_STDERR = "2>>"
     STDERR_TO_STDOUT = "2>&1"
+    STDOUT_TO_STDERR = ">&2"
     WRITE_BOTH = "&>"
     HEREDOC = "<<"
     HERE_STRING = "<<<"
@@ -97,9 +98,46 @@ class IfNode:
     redirections: list[Redirection] = field(default_factory=list)
 
 
+class CaseTerminator(StrEnum):
+    """Name what happens after a case clause body runs"""
+
+    STOP = ";;"
+    FALL_THROUGH = ";&"
+    CONTINUE_MATCHING = ";;&"
+
+
+@dataclass(frozen=True)
+class CaseClause:
+    """Hold one ``pattern) body ;;`` clause of a case statement"""
+
+    patterns_text: str
+    body: str
+    terminator: CaseTerminator
+
+
+@dataclass(frozen=True)
+class CaseNode:
+    """Hold a case statement: the word it tests and its clauses in order"""
+
+    word_text: str
+    clauses: list[CaseClause]
+    redirections: list[Redirection] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class ForNode:
-    """Hold a for loop over a list of words"""
+    """Hold a for loop over a list of words, or an arithmetic loop when ``arithmetic`` is set"""
+
+    variable: str
+    words_text: str | None
+    body: str
+    redirections: list[Redirection] = field(default_factory=list)
+    arithmetic: tuple[str, str, str] | None = None
+
+
+@dataclass(frozen=True)
+class SelectNode:
+    """Hold a select loop that offers a numbered menu of words and binds the chosen one"""
 
     variable: str
     words_text: str | None
@@ -141,7 +179,9 @@ PlanNode = (
     | SubshellNode
     | BraceGroupNode
     | IfNode
+    | CaseNode
     | ForNode
+    | SelectNode
     | WhileNode
     | UntilNode
     | FunctionDefinitionNode

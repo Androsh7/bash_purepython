@@ -142,6 +142,7 @@ class FindCommand(Command):
     """Search for files in a directory hierarchy"""
 
     name = "find"
+    summary = "search for files in a directory hierarchy"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 

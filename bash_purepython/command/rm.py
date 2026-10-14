@@ -13,6 +13,7 @@ class RmCommand(Command):
     """Remove files and directories"""
 
     name = "rm"
+    summary = "remove files or directories"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

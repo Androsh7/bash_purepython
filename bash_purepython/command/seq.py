@@ -62,6 +62,7 @@ class SeqCommand(Command):
     """Print a sequence of numbers"""
 
     name = "seq"
+    summary = "print a sequence of numbers"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.STREAM_TEXT})
 

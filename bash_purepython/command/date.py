@@ -16,6 +16,7 @@ class DateCommand(Command):
     """Print the current date and time"""
 
     name = "date"
+    summary = "print the date and time"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

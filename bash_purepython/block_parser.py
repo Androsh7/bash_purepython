@@ -17,6 +17,9 @@ from bash_purepython.workflow import (
     AndOrListNode,
     BackgroundNode,
     BraceGroupNode,
+    CaseClause,
+    CaseNode,
+    CaseTerminator,
     ForNode,
     FunctionDefinitionNode,
     IfNode,
@@ -24,6 +27,7 @@ from bash_purepython.workflow import (
     PipelineNode,
     PlanNode,
     Redirection,
+    SelectNode,
     SimpleCommandNode,
     SubshellNode,
     UntilNode,
@@ -36,6 +40,14 @@ LIST_OPERATORS_LONGEST_FIRST = ("&&", "||", "|&", "|")
 NEGATION_PATTERN = re.compile(r"^!(?:\s+|$)")
 SECTION_KEYWORD_PATTERN = re.compile(r"^(then|elif|else|fi|do|done)(?:\s+|$)", re.DOTALL)
 FOR_HEADER_PATTERN = re.compile(r"^for\s+([A-Za-z_]\w*)(\s+in\b([^;\n]*))?\s*[;\n]?\s*(?=do\b)", re.DOTALL)
+FOR_ARITHMETIC_PATTERN = re.compile(r"^for\s*\(\((.*?)\)\)\s*;?\s*(?=do\b)", re.DOTALL)
+SELECT_HEADER_PATTERN = re.compile(r"^select\s+([A-Za-z_]\w*)(\s+in\b([^;\n]*))?\s*[;\n]?\s*(?=do\b)", re.DOTALL)
+CASE_HEADER_PATTERN = re.compile(r"^case\s+(.+?)\s+in(?=\s)", re.DOTALL)
+CASE_CLOSING_KEYWORD = "esac"
+CASE_OPENING_KEYWORD = "case"
+COMMAND_PREFIX_WORDS = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"})
+CASE_TERMINATORS_LONGEST_FIRST = (CaseTerminator.CONTINUE_MATCHING, CaseTerminator.FALL_THROUGH, CaseTerminator.STOP)
+ARITHMETIC_FOR_PART_COUNT = 3
 FUNCTION_PATTERN = re.compile(r"^(?:function\s+)?([A-Za-z_][\w-]*)\s*(?:\(\s*\))?\s*([({].*[)}])$", re.DOTALL)
 SIMPLE_COMMAND_BLOCK_TYPES = frozenset(
     {
@@ -86,7 +98,7 @@ class OperatorSplitter(ScriptSplitter):
         Args:
             character: The separator character at the current position
         """
-        if character == "\n" and self.pending_heredocs:
+        if character == "\n" and self.pending_heredocs and not self.nesting:
             self._consume_heredoc_line()
             return
         if character in "&|" and not self.nesting and self._previous_character() not in REDIRECTION_CHARACTERS:
@@ -101,8 +113,8 @@ class OperatorSplitter(ScriptSplitter):
         super()._consume_separator(character)
 
     def _consume_heredoc_operator(self) -> None:
-        """Remember which segment the heredoc belongs to, then defer to the base scanner"""
-        if self.heredoc_owner_index is None:
+        """Remember which segment a top-level heredoc belongs to, then defer to the base scanner"""
+        if self.heredoc_owner_index is None and not self.nesting:
             self.heredoc_owner_index = len(self.commands)
         super()._consume_heredoc_operator()
 
@@ -369,17 +381,33 @@ def parse_loop_sections(text: str, opening_keyword: str) -> tuple[str, str, list
 
 
 def parse_for(text: str) -> ForNode:
-    """Return the node for a for loop
+    """Return the node for a for loop, over words or in the arithmetic ``for (( ; ; ))`` form
 
     Args:
         text: The whole for block
 
     Raises:
-        ShellSyntaxError: If the header is not ``name in words``
+        ShellSyntaxError: If the header is neither ``name in words`` nor three arithmetic expressions
 
     Returns:
         A for node
     """
+    arithmetic_match = FOR_ARITHMETIC_PATTERN.match(text)
+    if arithmetic_match is not None:
+        parts = arithmetic_match.group(1).split(";")
+        if len(parts) != ARITHMETIC_FOR_PART_COUNT:
+            raise ShellSyntaxError(f"bad for header: {text}")
+        sections = dict(split_into_sections(text[arithmetic_match.end() :].lstrip(), "do"))
+        if "done" not in sections:
+            raise ShellSyntaxError(f"loop without done: {text}")
+        initial, condition, step = (part.strip() for part in parts)
+        return ForNode(
+            variable="",
+            words_text=None,
+            body=sections["do"],
+            redirections=parse_trailing_redirections(sections["done"]),
+            arithmetic=(initial, condition, step),
+        )
     match = FOR_HEADER_PATTERN.match(text)
     if match is None:
         raise ShellSyntaxError(f"bad for header: {text}")
@@ -389,6 +417,203 @@ def parse_for(text: str) -> ForNode:
         raise ShellSyntaxError(f"loop without done: {text}")
     redirections = parse_trailing_redirections(sections["done"])
     return ForNode(variable=match.group(1), words_text=words_text, body=sections["do"], redirections=redirections)
+
+
+def parse_select(text: str) -> SelectNode:
+    """Return the node for a select loop
+
+    Args:
+        text: The whole select block
+
+    Raises:
+        ShellSyntaxError: If the header is not ``name`` or ``name in words`` followed by ``do``
+
+    Returns:
+        A select node
+    """
+    match = SELECT_HEADER_PATTERN.match(text)
+    if match is None:
+        raise ShellSyntaxError(f"bad select header: {text}")
+    words_text = None if match.group(2) is None else (match.group(3) or "").strip()
+    sections = dict(split_into_sections(text[match.end() :].lstrip(), "do"))
+    if "done" not in sections:
+        raise ShellSyntaxError(f"loop without done: {text}")
+    redirections = parse_trailing_redirections(sections["done"])
+    return SelectNode(variable=match.group(1), words_text=words_text, body=sections["do"], redirections=redirections)
+
+
+class CaseClauseScanner:
+    """Walk the text after ``case WORD in`` and cut it into clauses"""
+
+    def __init__(self, text: str):
+        """Prepare to scan the clauses
+
+        Args:
+            text: Everything after the ``in`` keyword, including the closing ``esac``
+        """
+        self.text = text
+        self.position = 0
+        self.clauses: list[CaseClause] = []
+        self.trailing = ""
+
+    def scan(self) -> tuple[list[CaseClause], str]:
+        """Return the clauses and the text after ``esac``
+
+        Raises:
+            ShellSyntaxError: If a clause is malformed or ``esac`` is missing
+
+        Returns:
+            The clauses in order and whatever follows the closing keyword
+        """
+        while True:
+            self._skip_blank()
+            if self.position >= len(self.text):
+                raise ShellSyntaxError(f"case without esac: {self.text}")
+            if self._at_keyword(CASE_CLOSING_KEYWORD):
+                self.trailing = self.text[self.position + len(CASE_CLOSING_KEYWORD) :]
+                return self.clauses, self.trailing
+            if self.text[self.position] == "(":
+                self.position += 1
+            patterns_text = self._read_patterns()
+            body, terminator = self._read_body()
+            self.clauses.append(CaseClause(patterns_text=patterns_text, body=body, terminator=terminator))
+
+    def _skip_blank(self) -> None:
+        """Skip whitespace, newlines and comments"""
+        while self.position < len(self.text):
+            character = self.text[self.position]
+            if character in " \t\n":
+                self.position += 1
+            elif character == "#":
+                newline = self.text.find("\n", self.position)
+                self.position = len(self.text) if newline == -1 else newline
+            else:
+                return
+
+    def _at_keyword(self, keyword: str) -> bool:
+        """Return whether the keyword stands as a whole word at the current position
+
+        Args:
+            keyword: The word to look for
+
+        Returns:
+            True when it is there and not part of a longer word
+        """
+        end = self.position + len(keyword)
+        return self.text.startswith(keyword, self.position) and (end >= len(self.text) or self.text[end] in " \t\n;&|)")
+
+    def _read_patterns(self) -> str:
+        """Return the pattern list up to the parenthesis that closes it
+
+        Raises:
+            ShellSyntaxError: If no closing parenthesis follows
+
+        Returns:
+            The raw pattern text
+        """
+        start = self.position
+        while self.position < len(self.text):
+            character = self.text[self.position]
+            if character == ")":
+                patterns_text = self.text[start : self.position].strip()
+                self.position += 1
+                return patterns_text
+            self._skip_quoted_or_nested()
+        raise ShellSyntaxError(f"case pattern without a closing parenthesis: {self.text}")
+
+    def _read_body(self) -> tuple[str, CaseTerminator]:
+        """Return the clause body and the terminator that ended it
+
+        Returns:
+            The body text and ``;;``, ``;&`` or ``;;&``, the first when ``esac`` ended the last clause
+        """
+        start = self.position
+        case_depth = 0
+        while self.position < len(self.text):
+            character = self.text[self.position]
+            if case_depth == 0:
+                for terminator in CASE_TERMINATORS_LONGEST_FIRST:
+                    if self.text.startswith(terminator.value, self.position):
+                        body = self.text[start : self.position].strip()
+                        self.position += len(terminator.value)
+                        return body, terminator
+                if self._at_keyword(CASE_CLOSING_KEYWORD) and self._at_word_start():
+                    return self.text[start : self.position].strip(), CaseTerminator.STOP
+            if self._at_keyword(CASE_OPENING_KEYWORD) and self._at_command_start():
+                case_depth += 1
+                self.position += len(CASE_OPENING_KEYWORD)
+                continue
+            if case_depth > 0 and self._at_keyword(CASE_CLOSING_KEYWORD) and self._at_word_start():
+                case_depth -= 1
+                self.position += len(CASE_CLOSING_KEYWORD)
+                continue
+            if character == "#" and self._at_word_start():
+                newline = self.text.find("\n", self.position)
+                self.position = len(self.text) if newline == -1 else newline
+                continue
+            self._skip_quoted_or_nested()
+        return self.text[start:].strip(), CaseTerminator.STOP
+
+    def _at_word_start(self) -> bool:
+        """Return whether the current position begins a word"""
+        return self.position == 0 or self.text[self.position - 1] in " \t\n;&|(){}"
+
+    def _at_command_start(self) -> bool:
+        """Return whether the current position begins a command rather than an argument of one"""
+        if not self._at_word_start():
+            return False
+        index = self.position
+        while index > 0 and self.text[index - 1] in " \t":
+            index -= 1
+        if index == 0 or self.text[index - 1] in "\n;&|(){":
+            return True
+        word_end = index
+        while index > 0 and self.text[index - 1] not in " \t\n;&|(){}":
+            index -= 1
+        return self.text[index:word_end] in COMMAND_PREFIX_WORDS
+
+    def _skip_quoted_or_nested(self) -> None:
+        """Advance past one character, or past a whole quoted string or bracketed expansion"""
+        character = self.text[self.position]
+        if character == "\\":
+            self.position += 2
+        elif character == "'":
+            closing = self.text.find("'", self.position + 1)
+            self.position = len(self.text) if closing == -1 else closing + 1
+        elif character == '"':
+            self.position += 1
+            while self.position < len(self.text) and self.text[self.position] != '"':
+                self.position += 2 if self.text[self.position] == "\\" else 1
+            self.position += 1
+        elif character == "`":
+            closing = self.text.find("`", self.position + 1)
+            self.position = len(self.text) if closing == -1 else closing + 1
+        elif self.text.startswith("$(", self.position):
+            self.position = find_group_close(self.text[self.position + 1 :]) + self.position + 2
+        elif self.text.startswith("${", self.position):
+            closing = self.text.find("}", self.position)
+            self.position = len(self.text) if closing == -1 else closing + 1
+        else:
+            self.position += 1
+
+
+def parse_case(text: str) -> CaseNode:
+    """Return the node for a case statement
+
+    Args:
+        text: The whole case block
+
+    Raises:
+        ShellSyntaxError: If the header is not ``case WORD in`` or a clause is malformed
+
+    Returns:
+        A case node
+    """
+    match = CASE_HEADER_PATTERN.match(text)
+    if match is None:
+        raise ShellSyntaxError(f"bad case header: {text}")
+    clauses, trailing = CaseClauseScanner(text[match.end() :]).scan()
+    return CaseNode(word_text=match.group(1), clauses=clauses, redirections=parse_trailing_redirections(trailing))
 
 
 def parse_function(text: str) -> FunctionDefinitionNode:
@@ -439,6 +664,10 @@ def build_plan(block: CommandBlock) -> PlanNode:
         return parse_if(text)
     if block_type == CommandBlockType.FOR:
         return parse_for(text)
+    if block_type == CommandBlockType.SELECT:
+        return parse_select(text)
+    if block_type == CommandBlockType.CASE:
+        return parse_case(text)
     if block_type == CommandBlockType.WHILE:
         condition, body, redirections = parse_loop_sections(text, "while")
         return WhileNode(condition=condition, body=body, redirections=redirections)

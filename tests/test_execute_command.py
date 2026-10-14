@@ -357,7 +357,7 @@ def test_append_redirection_keeps_existing_content(shell: ShellHarness, tmp_path
 
 def test_read_redirection_feeds_the_command(shell: ShellHarness, tmp_path: Path) -> None:
     """Check that < supplies the file as standard input"""
-    (tmp_path / "in.txt").write_text("from file\n", encoding="utf-8")
+    (tmp_path / "in.txt").write_text("from file\n", encoding="utf-8", newline="\n")
 
     run = shell.run("cat < in.txt")
 
@@ -602,17 +602,17 @@ def test_piped_input_is_read_once_by_the_first_reader(shell: ShellHarness) -> No
 
 
 def test_endless_producer_in_a_substitution_hits_the_output_limit(tmp_path: Path) -> None:
-    """Check that a substitution that never stops writing is cut off with an error instead of hanging"""
+    """Check that a substitution that never stops writing fails the command with an error instead of hanging"""
     pieces: list[str] = []
     errors: list[str] = []
     state = ShellState(cwd=tmp_path, write_output=pieces.append, write_error=errors.append)
     executor = Executor(output_limit_characters=1000)
 
-    exit_code = asyncio.run(executor.run_script_async("x=$(yes); echo after", state))
+    exit_code = asyncio.run(executor.run_script_async('echo "test: $(yes)"; echo after', state))
 
-    assert "".join(pieces) == "after\n"
-    assert exit_code == 0
-    assert errors != []
+    assert "".join(pieces) == ""
+    assert exit_code != 0
+    assert "command substitution" in "".join(errors)
 
 
 @pytest.mark.parametrize(
@@ -689,3 +689,235 @@ def test_async_output_sink_receives_chunks(tmp_path: Path) -> None:
     asyncio.run(Executor().run_script_async("yes | head -n 2; echo done", state))
 
     assert received == ["y\n", "y\n", "done\n"]
+
+
+def test_stdout_to_stderr_sends_output_to_the_error_sink(shell: ShellHarness) -> None:
+    """Check that >&2 moves a command's output to standard error and 1>&2 does the same"""
+    run = shell.run("echo a; echo b >&2; echo c 1>&2")
+
+    assert (run.stdout, run.stderr) == ("a\n", "b\nc\n")
+
+
+def test_stdout_to_stderr_follows_a_redirected_error_stream(shell: ShellHarness) -> None:
+    """Check that output sent to standard error lands where the enclosing command sent its errors"""
+    run = shell.run("f() { echo fn >&2; }; f 2>&1 | cat; ( echo in >&2 ) 2>err.txt; cat err.txt")
+
+    assert (run.stdout, run.stderr) == ("fn\nin\n", "")
+
+
+def test_closing_a_descriptor_discards_its_output(shell: ShellHarness) -> None:
+    """Check that >&- and 2>&- drop the stream while >&1 and 2>&2 change nothing"""
+    run = shell.run("echo x >&-; cat nope 2>&-; echo y >&1; echo z 2>&2")
+
+    assert (run.stdout, run.stderr) == ("y\nz\n", "")
+
+
+def test_heredoc_inside_a_command_substitution_feeds_the_inner_command(shell: ShellHarness) -> None:
+    """Check that a here-document written inside $( ) belongs to the command in the substitution"""
+    run = shell.run("x=$(cat <<EOF\nhello\nEOF\n); echo $x; echo $(cat <<EOF | rev\nabc\nEOF\n) after")
+
+    assert (run.stdout, run.stderr) == ("hello\ncba after\n", "")
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('FOO=(a b) true; echo "[${FOO[0]-unset}]"', "[unset]\n"),
+        ('FOO=(a b); FOO=(x) true; echo "${FOO[0]} ${#FOO[@]}"', "a 2\n"),
+        ('FOO=1; FOO=(x) true; echo "[$FOO]"', "[1]\n"),
+        ('FOO=(a); FOO=2 true; echo "${FOO[0]}"', "a\n"),
+    ],
+    ids=["array_removed", "array_restored", "scalar_restored_over_array", "array_restored_over_scalar"],
+)
+def test_temporary_array_assignment_does_not_outlive_the_command(
+    shell: ShellHarness, script: str, expected: str
+) -> None:
+    """Check that a NAME=(...) prefix is undone after the command whatever the name held before"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("case 1 in 1) echo in case ;; esac", "in case\n"),
+        ("case 1 in 1) echo a; case 2 in 2) echo nested ;; esac ;; esac", "a\nnested\n"),
+        ("case 1 in 1) if true; then case 2 in 2) echo deep ;; esac; fi ;; esac", "deep\n"),
+        ("case x in x) echo first; echo case;; *) echo other;; esac", "first\ncase\n"),
+    ],
+    ids=["word_as_argument", "nested", "nested_after_then", "word_before_terminator"],
+)
+def test_case_body_treats_the_word_case_as_a_keyword_only_at_command_start(
+    shell: ShellHarness, script: str, expected: str
+) -> None:
+    """Check that an argument spelled case does not open a nested case statement"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+    assert run.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_stdout", "expected_stderr"),
+    [
+        ('select x in a b c; do echo "[$x]"; break; done <<< 2', "[b]\n", "1) a\n2) b\n3) c\n#? "),
+        ('select x in a b; do echo "[$x] [$REPLY]"; break; done <<< 9', "[] [9]\n", "1) a\n2) b\n#? "),
+        ('select x in a b; do echo "[$x]"; break; done <<< zz', "[]\n", "1) a\n2) b\n#? "),
+        ('select x in a b; do echo "[$x] [$REPLY]"; break; done <<< " 2x"', "[] [ 2x]\n", "1) a\n2) b\n#? "),
+        ('select x in a b; do echo "[$x]"; break; done <<< " 2 "', "[b]\n", "1) a\n2) b\n#? "),
+        ("PS3='pick: '; select x in a; do echo $x; break; done <<< 1", "a\n", "1) a\npick: "),
+        ("select x in a b; do echo $x; done <<< $'1\\n2'", "a\nb\n", "1) a\n2) b\n#? #? #? \n"),
+        ("select x in a b; do echo $x; done <<< $'\\n2'", "b\n", "1) a\n2) b\n#? 1) a\n2) b\n#? #? \n"),
+        ("set -- p q; select x; do echo $x; break; done <<< 2", "q\n", "1) p\n2) q\n#? "),
+        ("select x in a; do echo $x; break; done < /dev/null; echo done", "done\n", "1) a\n#? \n"),
+    ],
+    ids=[
+        "picks_number",
+        "out_of_range",
+        "not_a_number",
+        "trailing_text_keeps_raw_reply",
+        "padded_number",
+        "ps3",
+        "loops_until_eof",
+        "empty_line_reprints",
+        "positional",
+        "eof",
+    ],
+)
+def test_select_reads_a_choice_and_binds_it(
+    shell: ShellHarness, script: str, expected_stdout: str, expected_stderr: str
+) -> None:
+    """Check that select prints its menu and prompt to stderr and binds the chosen word"""
+    run = shell.run(script)
+
+    assert run.stdout == expected_stdout
+    assert run.stderr == expected_stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_stderr"),
+    [
+        (
+            "select x in a b c d e f g h i j k l; do break; done <<< 1",
+            "1) a    3) c   5) e   7) g   9) i  11) k\n2) b    4) d   6) f   8) h  10) j  12) l\n#? ",
+        ),
+        (
+            "select x in alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu; do break; done <<< 1",
+            "1) alpha      3) gamma\t   5) epsilon   7) eta\t     9) iota\t 11) lambda\n"
+            "2) beta\t      4) delta\t   6) zeta      8) theta    10) kappa\t 12) mu\n#? ",
+        ),
+        (
+            "COLUMNS=20; select x in a b c d e f g h i j k l; do break; done <<< 1",
+            "1) a    7) g\n2) b    8) h\n3) c    9) i\n4) d   10) j\n5) e   11) k\n6) f   12) l\n#? ",
+        ),
+    ],
+    ids=["short_words", "tabs_between_columns", "narrow_terminal"],
+)
+def test_select_lays_the_menu_out_in_columns(shell: ShellHarness, script: str, expected_stderr: str) -> None:
+    """Check that a long menu is laid out column-major across the terminal width exactly as bash prints it"""
+    run = shell.run(script)
+
+    assert run.stderr == expected_stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("cat <(echo hi)", "hi\n"),
+        ("cat <(printf 'a\\nb\\n') <(printf 'c\\n')", "a\nb\nc\n"),
+        ("paste -d, <(printf '1\\n2\\n') <(printf 'x\\ny\\n')", "1,x\n2,y\n"),
+        ("while read -r line; do echo \"got $line\"; done < <(printf 'p\\nq\\n')", "got p\ngot q\n"),
+        ("echo hello | tee >(tr a-z A-Z) >/dev/null", "HELLO\n"),
+        ("echo hello > >(rev)", "olleh\n"),
+        ('x=$(cat <(echo inner)); echo "[$x]"', "[inner]\n"),
+    ],
+    ids=["input", "two_inputs", "paste", "redirected_input", "output", "redirected_output", "inside_substitution"],
+)
+def test_process_substitution_connects_a_script_to_a_file(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that <( ) hands a command the script's output and >( ) hands the script what was written"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+    assert run.exit_code == 0
+
+
+def test_process_substitution_removes_its_temporary_files(shell: ShellHarness) -> None:
+    """Check that the files standing in for the substitutions are gone once the command has run"""
+    run = shell.run('f=$(echo <(echo a)); cat <(echo b) > /dev/null; echo "$f"')
+
+    assert not Path(run.stdout.strip()).exists()
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'f() { echo start; cat "$1"; }; f <(echo hi)',
+        "for x in 1; do echo start; cat <(echo hi); done",
+        'g() { echo start; read -r line < "$1"; echo "$line"; }; g <(echo hi)',
+    ],
+    ids=["function_body", "loop_body", "function_reading_the_file"],
+)
+def test_process_substitution_outlives_the_blocks_of_a_nested_body(shell: ShellHarness, script: str) -> None:
+    """Check that a function or loop body can still read a substitution its caller created"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.stderr) == ("start\nhi\n", "")
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "set -e; for x in a; do false && true; done; echo after",
+        "set -e; if true; then false && true; fi; echo after",
+        "set -e; { false && true; }; echo after",
+        "set -e; case a in a) false && true;; esac; echo after",
+        "set -e; i=0; while [ $i -lt 1 ]; do i=1; false && true; done; echo after",
+    ],
+    ids=["for", "if", "group", "case", "while"],
+)
+def test_errexit_ignores_a_compound_command_whose_last_list_was_exempt(shell: ShellHarness, script: str) -> None:
+    """Check that a compound command failing only because of an ignored && list does not stop the script"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == ("after\n", 0)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "set -e; f() { false && true; }; f; echo after",
+        "set -e; ( false && true ); echo after",
+        "set -e; for x in a; do false; done; echo after",
+    ],
+    ids=["function", "subshell", "plain_failure_in_loop"],
+)
+def test_errexit_still_stops_on_a_failure_that_is_not_exempt(shell: ShellHarness, script: str) -> None:
+    """Check that functions, subshells and plain failures inside loops still trigger errexit"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == ("", 1)
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("env echo hi there", "hi there\n"),
+        ('export A=1; env -u A B=2 bash -c \'echo "[$A][$B]"\'; echo "[${B-unset}]"', "[][2]\n[unset]\n"),
+        ("echo piped | env cat", "piped\n"),
+        ("env -- printf '%s\\n' ok", "ok\n"),
+    ],
+    ids=["plain_command", "changed_environment", "standard_input", "options_end"],
+)
+def test_env_runs_the_command_it_names(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that env runs a command with the environment it describes and leaves the shell's own alone"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected, 0)
+
+
+def test_env_reports_a_command_that_does_not_exist(shell: ShellHarness) -> None:
+    """Check that env naming an unknown command fails with the not-found code"""
+    run = shell.run("env nosuchcommand")
+
+    assert run.exit_code == EXIT_CODE_COMMAND_NOT_FOUND

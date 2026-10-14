@@ -147,13 +147,12 @@ def directory_entries(directory: Path, options: ListingOptions) -> list[ListedEn
 
     Args:
         directory: The directory
-        options: Which hidden entries are included and whether descendants are
+        options: Which hidden entries are included
 
     Returns:
         The directory's children, with ``.`` and ``..`` first under -a
     """
-    children = list(directory.rglob("*")) if options.recursive else list(directory.iterdir())
-    entries = [read_entry(child.relative_to(directory).as_posix(), child) for child in children]
+    entries = [read_entry(child.name, child) for child in directory.iterdir()]
     if not (options.show_all or options.show_almost_all):
         entries = [entry for entry in entries if not entry.path.name.startswith(HIDDEN_PREFIX)]
     if options.show_all:
@@ -266,6 +265,7 @@ class LsCommand(Command):
     """List files and directories"""
 
     name = "ls"
+    summary = "list directory contents"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 
@@ -326,32 +326,43 @@ class LsCommand(Command):
         pieces: list[str] = []
         if files:
             pieces.append(format_listing(sort_entries(files, options), options, with_total=False))
-        show_headers = len(parsed.paths) > 1
+        show_headers = len(parsed.paths) > 1 or options.recursive
         for path_text, directory in directories:
-            listing = self.list_directory(path_text, directory, options, state)
-            if listing is None:
-                exit_code = EXIT_CODE_FAILURE
-                continue
-            header = f"{path_text}:\n" if show_headers else ""
-            separator = "\n" if pieces and show_headers else ""
-            pieces.append(separator + header + listing)
+            for header_path, listing in self.list_directory_tree(path_text, directory, options, state):
+                if listing is None:
+                    exit_code = EXIT_CODE_FAILURE
+                    continue
+                header = f"{header_path}:\n" if show_headers else ""
+                separator = "\n" if pieces and show_headers else ""
+                pieces.append(separator + header + listing)
         return CommandResult(stdout="".join(pieces), exit_code=exit_code)
 
-    def list_directory(self, path_text: str, directory: Path, options: ListingOptions, state: ShellState) -> str | None:
-        """Return the listing of one directory, or None after reporting that it cannot be read
+    def list_directory_tree(
+        self, path_text: str, directory: Path, options: ListingOptions, state: ShellState
+    ) -> list[tuple[str, str | None]]:
+        """Return the listing of a directory and, under -R, of every directory below it in listing order
 
         Args:
-            path_text: The directory as written
+            path_text: The directory as written, which heads its listing and prefixes those below it
             directory: The resolved directory
             options: The listing options
             state: The shell state errors are written through
 
         Returns:
-            The listing text, or None
+            Pairs of the header path and the listing text, or None for a directory that cannot be read
         """
         try:
-            entries = directory_entries(directory, options)
+            entries = sort_entries(directory_entries(directory, options), options)
         except OSError as error:
             state.write_error(f"ls: cannot open directory '{path_text}': {error.strerror}\n")
-            return None
-        return format_listing(sort_entries(entries, options), options, with_total=True)
+            return [(path_text, None)]
+        listings: list[tuple[str, str | None]] = [(path_text, format_listing(entries, options, with_total=True))]
+        if not options.recursive:
+            return listings
+        for entry in entries:
+            is_dot_directory = entry.name in (CURRENT_DIRECTORY_NAME, PARENT_DIRECTORY_NAME)
+            if is_dot_directory or not stat.S_ISDIR(entry.status.st_mode):
+                continue
+            child_path_text = f"{path_text.rstrip(DIRECTORY_SUFFIX)}{DIRECTORY_SUFFIX}{entry.name}"
+            listings.extend(self.list_directory_tree(child_path_text, entry.path, options, state))
+        return listings

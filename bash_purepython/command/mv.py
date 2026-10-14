@@ -13,6 +13,7 @@ class MvCommand(Command):
     """Move or rename files and directories"""
 
     name = "mv"
+    summary = "move or rename files"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

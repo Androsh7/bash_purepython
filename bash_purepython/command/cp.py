@@ -34,6 +34,7 @@ class CpCommand(Command):
     """Copy files and directories"""
 
     name = "cp"
+    summary = "copy files and directories"
     input_kinds = frozenset({InputKind.ARGUMENTS})
     output_kinds = frozenset({OutputKind.TEXT})
 

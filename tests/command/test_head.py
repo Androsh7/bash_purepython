@@ -91,3 +91,35 @@ def test_head_help_goes_to_stdout(shell: ShellHarness) -> None:
 
     assert run.exit_code == 0
     assert "usage" in run.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("head -n -17 numbers.txt", "1\n2\n3\n"),
+        ("head -n -20 numbers.txt", ""),
+        ("head -c -47 numbers.txt", "1\n2\n"),
+    ],
+    ids=["all_but_last_lines", "all_lines_dropped", "all_but_last_characters"],
+)
+def test_head_negative_count_drops_the_end(
+    shell: ShellHarness, numbered_file: Path, script: str, expected: str
+) -> None:
+    """Check that a negative count prints everything but the last part"""
+    assert shell.run(script).stdout == expected
+
+
+def test_head_negative_count_reads_standard_input(shell: ShellHarness) -> None:
+    """Check that all but the last lines of piped input are printed"""
+    run = shell.run("printf 'a\\nb\\nc\\n' | head -n -1")
+
+    assert run.stdout == "a\nb\n"
+
+
+@pytest.mark.parametrize("script", ["head", "head -", "head -n 3"], ids=["bare", "dash", "count"])
+def test_head_with_no_input_prints_nothing(shell: ShellHarness, script: str) -> None:
+    """Check that head run at the top level with nothing piped in exits cleanly"""
+    run = shell.run(script)
+
+    assert run.stdout == ""
+    assert run.exit_code == 0

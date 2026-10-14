@@ -74,7 +74,7 @@ def test_grep_missing_file_exits_two(shell: ShellHarness, two_files: None) -> No
 
 def test_grep_bad_pattern_exits_two(shell: ShellHarness, two_files: None) -> None:
     """Check that an invalid regular expression is a usage error"""
-    run = shell.run("grep '(' a.txt")
+    run = shell.run("grep -E '(' a.txt")
 
     assert run.exit_code == 2
 
@@ -98,3 +98,190 @@ def test_grep_quiet_works_as_an_if_condition_on_piped_input(shell: ShellHarness)
     run = shell.run("if echo needle | grep -q needle; then echo found; fi")
 
     assert run.stdout == "found\n"
+
+
+@pytest.fixture
+def context_file(tmp_path: Path) -> None:
+    """Write a numbered file with two matches far apart and two close together"""
+    lines = [f"line{number}" for number in range(1, 13)]
+    lines[2] = "match three"
+    lines[8] = "match nine"
+    lines[10] = "match eleven"
+    (tmp_path / "context.txt").write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_stdout", "expected_exit_code"),
+    [
+        ("echo 'cat hat bat' | grep -o '.at'", "cat\nhat\nbat\n", 0),
+        ("echo 'cat hat' | grep -o 'z'", "", 1),
+        ("grep -o 'an' a.txt", "an\nan\n", 0),
+        ("grep -on 'an' a.txt", "2:an\n2:an\n", 0),
+        ("grep -o 'pp' a.txt b.txt", "a.txt:pp\na.txt:pp\nb.txt:pp\n", 0),
+        ("grep -v -o 'apple' a.txt", "", 0),
+        ("echo 'apple pineapple' | grep -ow 'apple'", "apple\n", 0),
+        ("grep -w 'apple' a.txt b.txt", "a.txt:apple\nb.txt:apple tart\n", 0),
+        ("echo 'pineapple' | grep -w 'apple'", "", 1),
+        ("grep -x 'apple' a.txt b.txt", "a.txt:apple\n", 0),
+        ("echo 'apple tart' | grep -x 'apple'", "", 1),
+    ],
+    ids=[
+        "only_matching_each_match_on_its_line",
+        "only_matching_no_match",
+        "only_matching_file",
+        "only_matching_with_line_numbers",
+        "only_matching_with_filenames",
+        "only_matching_with_invert_prints_nothing",
+        "only_matching_whole_word",
+        "whole_word_files",
+        "whole_word_rejects_substring",
+        "whole_line",
+        "whole_line_rejects_prefix",
+    ],
+)
+def test_grep_only_matching_and_word_options(
+    shell: ShellHarness, two_files: None, script: str, expected_stdout: str, expected_exit_code: int
+) -> None:
+    """Check -o, -w and -x"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected_stdout, expected_exit_code)
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("grep -A 1 three context.txt", "match three\nline4\n"),
+        ("grep -B 1 three context.txt", "line2\nmatch three\n"),
+        ("grep -C 1 three context.txt", "line2\nmatch three\nline4\n"),
+        ("grep -1 three context.txt", "line2\nmatch three\nline4\n"),
+        ("grep -n -C 1 three context.txt", "2-line2\n3:match three\n4-line4\n"),
+        ("grep -A 1 match context.txt", "match three\nline4\n--\nmatch nine\nline10\nmatch eleven\nline12\n"),
+        ("grep -A 0 match context.txt", "match three\n--\nmatch nine\n--\nmatch eleven\n"),
+        (
+            "grep -C 1 match context.txt",
+            "line2\nmatch three\nline4\n--\nline8\nmatch nine\nline10\nmatch eleven\nline12\n",
+        ),
+        ("grep -B 2 nine context.txt", "line7\nline8\nmatch nine\n"),
+        ("grep -A 5 eleven context.txt", "match eleven\nline12\n"),
+        ("grep -B 5 three context.txt", "line1\nline2\nmatch three\n"),
+        ("grep -c -C 2 match context.txt", "3\n"),
+        ("grep -H -C 1 three context.txt", "context.txt-line2\ncontext.txt:match three\ncontext.txt-line4\n"),
+        (
+            "grep -C 1 -v line context.txt",
+            "line2\nmatch three\nline4\n--\nline8\nmatch nine\nline10\nmatch eleven\nline12\n",
+        ),
+    ],
+    ids=[
+        "after",
+        "before",
+        "context",
+        "numeric_shorthand",
+        "context_with_line_numbers_uses_dash",
+        "separator_between_distant_groups",
+        "zero_context_still_separates_groups",
+        "adjacent_groups_merge_without_separator",
+        "before_two",
+        "after_past_end",
+        "before_past_start",
+        "count_ignores_context",
+        "filename_context_prefix",
+        "invert_with_context",
+    ],
+)
+def test_grep_prints_context(shell: ShellHarness, context_file: None, script: str, expected: str) -> None:
+    """Check -A, -B, -C and the -- separator between groups"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected, 0)
+
+
+def test_grep_context_separator_between_files(shell: ShellHarness, two_files: None) -> None:
+    """Check that groups from different files are separated"""
+    run = shell.run("grep -A 1 apple a.txt b.txt")
+
+    assert run.stdout == "a.txt:apple\na.txt-banana\n--\nb.txt:apple tart\n"
+
+
+def test_grep_recursive_without_a_path_searches_the_current_directory(shell: ShellHarness, two_files: None) -> None:
+    """Check that -r alone walks . and labels files without a ./ prefix"""
+    run = shell.run("grep -r cherry")
+
+    assert run.stdout == "b.txt:cherry\n"
+
+
+def test_grep_recursive_walks_nested_directories_with_the_path_prefix(shell: ShellHarness, tmp_path: Path) -> None:
+    """Check that -R labels nested files with the directory as written and the relative path"""
+    (tmp_path / "tree" / "inner").mkdir(parents=True)
+    (tmp_path / "tree" / "top.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "tree" / "inner" / "deep.txt").write_text("needle\nhay\n", encoding="utf-8")
+
+    run = shell.run("grep -Rn needle tree")
+
+    assert run.stdout == "tree/inner/deep.txt:1:needle\ntree/top.txt:1:needle\n"
+
+
+def test_grep_recursive_only_matching_prefixes_each_match(shell: ShellHarness, two_files: None) -> None:
+    """Check that -ro combines the path label with each matched part"""
+    run = shell.run("grep -ro 'app' .")
+
+    assert run.stdout == "./a.txt:app\n./b.txt:app\n"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected", "exit_code"),
+    [
+        ("echo 'f(x)' | grep 'f(x)'", "f(x)\n", 0),
+        ("echo 'a+b' | grep 'a+b'", "a+b\n", 0),
+        ("echo 'aa' | grep 'a\\{2\\}'", "aa\n", 0),
+        ("echo 'ab' | grep -E 'a(b)'", "ab\n", 0),
+        ("echo 'ab' | grep -E 'x|b'", "ab\n", 0),
+        ("echo 'ab' | grep 'x|b'", "", 1),
+        ("echo 'aab' | grep -o 'a\\+'", "aa\n", 0),
+    ],
+    ids=[
+        "basic_parens",
+        "basic_plus",
+        "basic_interval",
+        "extended_group",
+        "extended_bar",
+        "basic_bar",
+        "basic_plus_escape",
+    ],
+)
+def test_grep_uses_posix_regex_dialects(shell: ShellHarness, script: str, expected: str, exit_code: int) -> None:
+    """Check that patterns are basic regular expressions unless -E is given"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+    assert run.exit_code == exit_code
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("printf 'a\\n-1\\nb\\n' | grep -e -1", "-1\n"),
+        ("printf 'a\\n-foo\\n' | grep -e -foo", "-foo\n"),
+        ("printf 'a\\n-1\\n' | grep --regexp -1", "-1\n"),
+    ],
+    ids=["number", "word", "long_option"],
+)
+def test_grep_takes_a_dash_value_after_an_option_that_needs_one(
+    shell: ShellHarness, script: str, expected: str
+) -> None:
+    """Check that the value after -e is the pattern even when it looks like an option or the -NUM shorthand"""
+    run = shell.run(script)
+
+    assert (run.stdout, run.exit_code) == (expected, 0)
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["seq 10 | grep -C 3 -A 1 5", "seq 10 | grep -A 1 -C 3 5"],
+    ids=["context_first", "after_first"],
+)
+def test_grep_explicit_after_context_wins_over_context(shell: ShellHarness, script: str) -> None:
+    """Check that -A sets the trailing context whatever the order of -C"""
+    run = shell.run(script)
+
+    assert run.stdout.split() == ["2", "3", "4", "5", "6"]
