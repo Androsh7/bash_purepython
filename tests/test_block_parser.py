@@ -6,7 +6,7 @@ import pytest
 # Project libraries
 from bash_purepython.block_parser import build_plan, split_at_operators
 from bash_purepython.parse_script import split_script_into_connected_commands
-from bash_purepython.shell_state import ShellSyntaxError, UnsupportedBlockError
+from bash_purepython.shell_state import ShellSyntaxError
 from bash_purepython.workflow import (
     AndOrListNode,
     BackgroundNode,
@@ -19,7 +19,9 @@ from bash_purepython.workflow import (
     ListOperator,
     PipelineNode,
     PlanNode,
+    Redirection,
     RedirectionKind,
+    SelectNode,
     SimpleCommandNode,
     SubshellNode,
     UntilNode,
@@ -207,14 +209,25 @@ def test_build_plan_makes_function_definitions(script: str, expected: FunctionDe
 
 
 @pytest.mark.parametrize(
-    "script",
-    ["select x in a b; do echo $x; done"],
-    ids=["select"],
+    ("script", "expected"),
+    [
+        ("select x in a b; do echo $x; done", SelectNode(variable="x", words_text="a b", body="echo $x")),
+        ("select x; do echo $x; done", SelectNode(variable="x", words_text=None, body="echo $x")),
+        (
+            "select x in a b\ndo\n  echo $x\ndone > out",
+            SelectNode(
+                variable="x",
+                words_text="a b",
+                body="echo $x",
+                redirections=[Redirection(kind=RedirectionKind.WRITE_STDOUT, target="out")],
+            ),
+        ),
+    ],
+    ids=["words", "positional", "multi_line_with_redirection"],
 )
-def test_build_plan_rejects_unsupported_blocks(script: str) -> None:
-    """Check that constructs outside this slice raise rather than misbehave"""
-    with pytest.raises(UnsupportedBlockError):
-        plan_for(script)
+def test_build_plan_makes_select_loops(script: str, expected: SelectNode) -> None:
+    """Check that a select loop keeps its variable, words, body and trailing redirections"""
+    assert plan_for(script) == expected
 
 
 def test_build_plan_reads_case_clauses_with_their_terminators() -> None:

@@ -602,17 +602,17 @@ def test_piped_input_is_read_once_by_the_first_reader(shell: ShellHarness) -> No
 
 
 def test_endless_producer_in_a_substitution_hits_the_output_limit(tmp_path: Path) -> None:
-    """Check that a substitution that never stops writing is cut off with an error instead of hanging"""
+    """Check that a substitution that never stops writing fails the command with an error instead of hanging"""
     pieces: list[str] = []
     errors: list[str] = []
     state = ShellState(cwd=tmp_path, write_output=pieces.append, write_error=errors.append)
     executor = Executor(output_limit_characters=1000)
 
-    exit_code = asyncio.run(executor.run_script_async("x=$(yes); echo after", state))
+    exit_code = asyncio.run(executor.run_script_async('echo "test: $(yes)"; echo after', state))
 
-    assert "".join(pieces) == "after\n"
-    assert exit_code == 0
-    assert errors != []
+    assert "".join(pieces) == ""
+    assert exit_code != 0
+    assert "command substitution" in "".join(errors)
 
 
 @pytest.mark.parametrize(
@@ -722,6 +722,25 @@ def test_heredoc_inside_a_command_substitution_feeds_the_inner_command(shell: Sh
 @pytest.mark.parametrize(
     ("script", "expected"),
     [
+        ('FOO=(a b) true; echo "[${FOO[0]-unset}]"', "[unset]\n"),
+        ('FOO=(a b); FOO=(x) true; echo "${FOO[0]} ${#FOO[@]}"', "a 2\n"),
+        ('FOO=1; FOO=(x) true; echo "[$FOO]"', "[1]\n"),
+        ('FOO=(a); FOO=2 true; echo "${FOO[0]}"', "a\n"),
+    ],
+    ids=["array_removed", "array_restored", "scalar_restored_over_array", "array_restored_over_scalar"],
+)
+def test_temporary_array_assignment_does_not_outlive_the_command(
+    shell: ShellHarness, script: str, expected: str
+) -> None:
+    """Check that a NAME=(...) prefix is undone after the command whatever the name held before"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
         ("case 1 in 1) echo in case ;; esac", "in case\n"),
         ("case 1 in 1) echo a; case 2 in 2) echo nested ;; esac ;; esac", "a\nnested\n"),
         ("case 1 in 1) if true; then case 2 in 2) echo deep ;; esac; fi ;; esac", "deep\n"),
@@ -737,3 +756,94 @@ def test_case_body_treats_the_word_case_as_a_keyword_only_at_command_start(
 
     assert run.stdout == expected
     assert run.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_stdout", "expected_stderr"),
+    [
+        ('select x in a b c; do echo "[$x]"; break; done <<< 2', "[b]\n", "1) a\n2) b\n3) c\n#? "),
+        ('select x in a b; do echo "[$x] [$REPLY]"; break; done <<< 9', "[] [9]\n", "1) a\n2) b\n#? "),
+        ('select x in a b; do echo "[$x]"; break; done <<< zz', "[]\n", "1) a\n2) b\n#? "),
+        ('select x in a b; do echo "[$x] [$REPLY]"; break; done <<< " 2x"', "[] [ 2x]\n", "1) a\n2) b\n#? "),
+        ('select x in a b; do echo "[$x]"; break; done <<< " 2 "', "[b]\n", "1) a\n2) b\n#? "),
+        ("PS3='pick: '; select x in a; do echo $x; break; done <<< 1", "a\n", "1) a\npick: "),
+        ("select x in a b; do echo $x; done <<< $'1\\n2'", "a\nb\n", "1) a\n2) b\n#? #? #? \n"),
+        ("select x in a b; do echo $x; done <<< $'\\n2'", "b\n", "1) a\n2) b\n#? 1) a\n2) b\n#? #? \n"),
+        ("set -- p q; select x; do echo $x; break; done <<< 2", "q\n", "1) p\n2) q\n#? "),
+        ("select x in a; do echo $x; break; done < /dev/null; echo done", "done\n", "1) a\n#? \n"),
+    ],
+    ids=[
+        "picks_number",
+        "out_of_range",
+        "not_a_number",
+        "trailing_text_keeps_raw_reply",
+        "padded_number",
+        "ps3",
+        "loops_until_eof",
+        "empty_line_reprints",
+        "positional",
+        "eof",
+    ],
+)
+def test_select_reads_a_choice_and_binds_it(
+    shell: ShellHarness, script: str, expected_stdout: str, expected_stderr: str
+) -> None:
+    """Check that select prints its menu and prompt to stderr and binds the chosen word"""
+    run = shell.run(script)
+
+    assert run.stdout == expected_stdout
+    assert run.stderr == expected_stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_stderr"),
+    [
+        (
+            "select x in a b c d e f g h i j k l; do break; done <<< 1",
+            "1) a    3) c   5) e   7) g   9) i  11) k\n2) b    4) d   6) f   8) h  10) j  12) l\n#? ",
+        ),
+        (
+            "select x in alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu; do break; done <<< 1",
+            "1) alpha      3) gamma\t   5) epsilon   7) eta\t     9) iota\t 11) lambda\n"
+            "2) beta\t      4) delta\t   6) zeta      8) theta    10) kappa\t 12) mu\n#? ",
+        ),
+        (
+            "COLUMNS=20; select x in a b c d e f g h i j k l; do break; done <<< 1",
+            "1) a    7) g\n2) b    8) h\n3) c    9) i\n4) d   10) j\n5) e   11) k\n6) f   12) l\n#? ",
+        ),
+    ],
+    ids=["short_words", "tabs_between_columns", "narrow_terminal"],
+)
+def test_select_lays_the_menu_out_in_columns(shell: ShellHarness, script: str, expected_stderr: str) -> None:
+    """Check that a long menu is laid out column-major across the terminal width exactly as bash prints it"""
+    run = shell.run(script)
+
+    assert run.stderr == expected_stderr
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("cat <(echo hi)", "hi\n"),
+        ("cat <(printf 'a\\nb\\n') <(printf 'c\\n')", "a\nb\nc\n"),
+        ("paste -d, <(printf '1\\n2\\n') <(printf 'x\\ny\\n')", "1,x\n2,y\n"),
+        ("while read -r line; do echo \"got $line\"; done < <(printf 'p\\nq\\n')", "got p\ngot q\n"),
+        ("echo hello | tee >(tr a-z A-Z) >/dev/null", "HELLO\n"),
+        ("echo hello > >(rev)", "olleh\n"),
+        ('x=$(cat <(echo inner)); echo "[$x]"', "[inner]\n"),
+    ],
+    ids=["input", "two_inputs", "paste", "redirected_input", "output", "redirected_output", "inside_substitution"],
+)
+def test_process_substitution_connects_a_script_to_a_file(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that <( ) hands a command the script's output and >( ) hands the script what was written"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+    assert run.exit_code == 0
+
+
+def test_process_substitution_removes_its_temporary_files(shell: ShellHarness) -> None:
+    """Check that the files standing in for the substitutions are gone once the command has run"""
+    run = shell.run('f=$(echo <(echo a)); cat <(echo b) > /dev/null; echo "$f"')
+
+    assert not Path(run.stdout.strip()).exists()

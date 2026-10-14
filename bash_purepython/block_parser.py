@@ -27,6 +27,7 @@ from bash_purepython.workflow import (
     PipelineNode,
     PlanNode,
     Redirection,
+    SelectNode,
     SimpleCommandNode,
     SubshellNode,
     UntilNode,
@@ -40,6 +41,7 @@ NEGATION_PATTERN = re.compile(r"^!(?:\s+|$)")
 SECTION_KEYWORD_PATTERN = re.compile(r"^(then|elif|else|fi|do|done)(?:\s+|$)", re.DOTALL)
 FOR_HEADER_PATTERN = re.compile(r"^for\s+([A-Za-z_]\w*)(\s+in\b([^;\n]*))?\s*[;\n]?\s*(?=do\b)", re.DOTALL)
 FOR_ARITHMETIC_PATTERN = re.compile(r"^for\s*\(\((.*?)\)\)\s*;?\s*(?=do\b)", re.DOTALL)
+SELECT_HEADER_PATTERN = re.compile(r"^select\s+([A-Za-z_]\w*)(\s+in\b([^;\n]*))?\s*[;\n]?\s*(?=do\b)", re.DOTALL)
 CASE_HEADER_PATTERN = re.compile(r"^case\s+(.+?)\s+in(?=\s)", re.DOTALL)
 CASE_CLOSING_KEYWORD = "esac"
 CASE_OPENING_KEYWORD = "case"
@@ -417,6 +419,29 @@ def parse_for(text: str) -> ForNode:
     return ForNode(variable=match.group(1), words_text=words_text, body=sections["do"], redirections=redirections)
 
 
+def parse_select(text: str) -> SelectNode:
+    """Return the node for a select loop
+
+    Args:
+        text: The whole select block
+
+    Raises:
+        ShellSyntaxError: If the header is not ``name`` or ``name in words`` followed by ``do``
+
+    Returns:
+        A select node
+    """
+    match = SELECT_HEADER_PATTERN.match(text)
+    if match is None:
+        raise ShellSyntaxError(f"bad select header: {text}")
+    words_text = None if match.group(2) is None else (match.group(3) or "").strip()
+    sections = dict(split_into_sections(text[match.end() :].lstrip(), "do"))
+    if "done" not in sections:
+        raise ShellSyntaxError(f"loop without done: {text}")
+    redirections = parse_trailing_redirections(sections["done"])
+    return SelectNode(variable=match.group(1), words_text=words_text, body=sections["do"], redirections=redirections)
+
+
 class CaseClauseScanner:
     """Walk the text after ``case WORD in`` and cut it into clauses"""
 
@@ -639,6 +664,8 @@ def build_plan(block: CommandBlock) -> PlanNode:
         return parse_if(text)
     if block_type == CommandBlockType.FOR:
         return parse_for(text)
+    if block_type == CommandBlockType.SELECT:
+        return parse_select(text)
     if block_type == CommandBlockType.CASE:
         return parse_case(text)
     if block_type == CommandBlockType.WHILE:

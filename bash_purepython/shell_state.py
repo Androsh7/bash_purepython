@@ -380,6 +380,22 @@ def write_to_stderr(text: str) -> None:
     sys.stderr.write(text)
 
 
+class ProcessSubstitutionDirection(StrEnum):
+    """Name which way a ``<( )`` or ``>( )`` process substitution moves data"""
+
+    INPUT = "<"
+    OUTPUT = ">"
+
+
+@dataclass(frozen=True)
+class ProcessSubstitution:
+    """Hold one process substitution: the temporary file standing in for it and the script behind it"""
+
+    path: Path
+    script: str
+    direction: ProcessSubstitutionDirection
+
+
 @dataclass
 class ShellState:
     """Hold everything a running script can read or change"""
@@ -394,6 +410,7 @@ class ShellState:
     positional_arguments: list[str] = field(default_factory=list)
     last_exit_code: int = EXIT_CODE_SUCCESS
     pending_stdin: Any = None
+    process_substitutions: list[ProcessSubstitution] = field(default_factory=list)
     loop_depth: int = 0
     function_depth: int = 0
     job_table: JobTable = field(default_factory=JobTable)

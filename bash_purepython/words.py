@@ -4,8 +4,10 @@
 import fnmatch
 import glob
 import itertools
+import os
 import random
 import re
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -17,6 +19,8 @@ from bash_purepython.arithmetic import evaluate_arithmetic
 from bash_purepython.shell_state import (
     NULL_DEVICE_PATH,
     ExpansionError,
+    ProcessSubstitution,
+    ProcessSubstitutionDirection,
     ShellOption,
     ShellState,
     ShellSyntaxError,
@@ -75,6 +79,8 @@ CLOSE_DESCRIPTOR_TARGET = "-"
 ECHO_ESCAPE_SEQUENCES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "\\": "\\"}
 HOME_VARIABLE_NAME = "HOME"
 ARITHMETIC_OPENING = "$(("
+PROCESS_SUBSTITUTION_OPENINGS = ("<(", ">(")
+PROCESS_SUBSTITUTION_FILE_PREFIX = "bash_purepython_"
 ARITHMETIC_CLOSING = "))"
 SHELL_NAME = "bash"
 POSITIONAL_FIELD_SEPARATOR = "\x1f"
@@ -184,6 +190,9 @@ class SimpleCommandTokenizer:
             self._end_word()
             self.position += 1
             return
+        if self.text.startswith(PROCESS_SUBSTITUTION_OPENINGS, self.position):
+            self._consume_process_substitution()
+            return
         if self._try_consume_redirection():
             return
         if character == "'":
@@ -292,6 +301,17 @@ class SimpleCommandTokenizer:
             for assignment in inner.assignments
         ]
         self.pending_array_words = [*leading, *inner.words]
+
+    def _consume_process_substitution(self) -> None:
+        """Consume a ``<(...)`` or ``>(...)`` process substitution as one unquoted part
+
+        Raises:
+            ShellSyntaxError: If the parenthesis never closes
+        """
+        start = self.position
+        self.position += len(PROCESS_SUBSTITUTION_OPENINGS[0])
+        self._skip_balanced("(", ")")
+        self._add_part(self.text[start : self.position], QuoteStyle.NONE)
 
     def _consume_ansi_c_quoted(self) -> None:
         """Consume a ``$'...'`` string, decoding its backslash escapes
@@ -535,8 +555,14 @@ class SimpleCommandTokenizer:
         while self.position < len(self.text) and self.text[self.position] in " \t":
             self.position += 1
         start = self.position
-        while self.position < len(self.text) and self.text[self.position] not in " \t\n<>|&;":
+        while self.position < len(self.text):
+            if self.text.startswith(PROCESS_SUBSTITUTION_OPENINGS, self.position):
+                self.position += len(PROCESS_SUBSTITUTION_OPENINGS[0])
+                self._skip_balanced("(", ")")
+                continue
             character = self.text[self.position]
+            if character in " \t\n<>|&;":
+                break
             if character == "'":
                 closing_index = self.text.find("'", self.position + 1)
                 self.position = len(self.text) if closing_index == -1 else closing_index + 1
@@ -1313,6 +1339,48 @@ def find_arithmetic_end(text: str, start: int) -> int | None:
     return outer_end if inner_end == outer_end - 1 else None
 
 
+async def substitute_process(
+    script: str, direction: ProcessSubstitutionDirection, state: ShellState, run_substitution: RunSubstitution
+) -> str:
+    """Return the path of a temporary file standing in for a ``<( )`` or ``>( )`` process substitution
+
+    An input substitution runs its script now and stores the output in the file. An output substitution
+    leaves the file for the command to write and records the script, which the executor runs over the
+    file once the command's block has finished. Either way the executor removes the file afterwards
+
+    Args:
+        script: The text between the parentheses
+        direction: Whether the command reads from the file or writes to it
+        state: The shell state that remembers the substitution until its block finishes
+        run_substitution: Runs a script and returns its output
+
+    Returns:
+        The file path as the command sees it
+    """
+    handle, raw_path = tempfile.mkstemp(prefix=PROCESS_SUBSTITUTION_FILE_PREFIX)
+    os.close(handle)
+    path = Path(raw_path)
+    if direction == ProcessSubstitutionDirection.INPUT:
+        await run_substitution(process_substitution_script(script, direction, path))
+    state.process_substitutions.append(ProcessSubstitution(path=path, script=script, direction=direction))
+    return path.as_posix()
+
+
+def process_substitution_script(script: str, direction: ProcessSubstitutionDirection, path: Path) -> str:
+    """Return the script that moves data between a process substitution's script and its file
+
+    Args:
+        script: The text between the parentheses
+        direction: Whether the script writes the file or reads it
+        path: The temporary file
+
+    Returns:
+        The script wrapped in a group and redirected to or from the file
+    """
+    operator = ">" if direction == ProcessSubstitutionDirection.INPUT else "<"
+    return f"{{ {script}\n}} {operator} '{path.as_posix()}'"
+
+
 async def expand_text(
     text: str,
     state: ShellState,
@@ -1365,6 +1433,11 @@ async def expand_text(
             pieces.append(
                 await expand_braced_parameter(braced, state, run_substitution, in_double_quotes, split_positional)
             )
+            index = end
+        elif not in_double_quotes and text.startswith(PROCESS_SUBSTITUTION_OPENINGS, index):
+            end = find_balanced_end(text, index + 1, "(", ")")
+            direction = ProcessSubstitutionDirection(character)
+            pieces.append(await substitute_process(text[index + 2 : end - 1], direction, state, run_substitution))
             index = end
         elif character == "$":
             match = VARIABLE_NAME_PATTERN.match(text, index + 1)

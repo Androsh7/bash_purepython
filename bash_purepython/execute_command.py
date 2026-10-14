@@ -21,7 +21,7 @@ from bash_purepython.command.command import Command, CommandInvocation, ExitStat
 from bash_purepython.command.registry import CommandRegistry
 from bash_purepython.conditional import conditional_body, evaluate_conditional
 from bash_purepython.parse_script import split_script_into_connected_commands
-from bash_purepython.shell_builtins import BUILTIN_SUMMARIES, ShellBuiltins
+from bash_purepython.shell_builtins import BUILTIN_SUMMARIES, ReadOptions, ShellBuiltins
 from bash_purepython.shell_state import (
     EXIT_CODE_BROKEN_PIPE,
     EXIT_CODE_COMMAND_NOT_FOUND,
@@ -44,6 +44,7 @@ from bash_purepython.shell_state import (
     OutputLimitExceededError,
     OutputSink,
     PipeSink,
+    ProcessSubstitutionDirection,
     ReturnFromFunction,
     ShellError,
     ShellOption,
@@ -72,6 +73,7 @@ from bash_purepython.words import (
     expand_word_as_pattern,
     expand_word_unsplit,
     expand_words,
+    process_substitution_script,
     resolve_array_index,
     tokenize_simple_command,
 )
@@ -89,6 +91,7 @@ from bash_purepython.workflow import (
     PlanNode,
     Redirection,
     RedirectionKind,
+    SelectNode,
     SimpleCommandNode,
     SubshellNode,
     UntilNode,
@@ -108,6 +111,15 @@ PATH_SEPARATOR = "/"
 EXIT_CODE_NOT_EXECUTABLE = 126
 EXIT_CODE_UNBOUND_VARIABLE = 127
 DEFAULT_OUTPUT_LIMIT_CHARACTERS = 16 << 20
+SELECT_PROMPT_VARIABLE_NAME = "PS3"
+DEFAULT_SELECT_PROMPT = "#? "
+REPLY_VARIABLE_NAME = "REPLY"
+COLUMNS_VARIABLE_NAME = "COLUMNS"
+DEFAULT_TERMINAL_WIDTH = 80
+SELECT_INDEX_SUFFIX_LENGTH = 2
+SELECT_CELL_GAP = 2
+TAB_WIDTH = 8
+INTEGER_REPLY_PATTERN = re.compile(r"^\s*[+-]?\d+\s*$")
 OUTPUT_REDIRECTION_KINDS = frozenset(
     {
         RedirectionKind.WRITE_STDOUT,
@@ -345,7 +357,8 @@ class Executor:
             "jobs": self.builtin_jobs,
             NO_OP_BUILTIN_NAME: self.builtin_no_op,
         }
-        self.builtins.update(ShellBuiltins(self).table())
+        self.shell_builtins = ShellBuiltins(self)
+        self.builtins.update(self.shell_builtins.table())
         self.script_command_names = SCRIPT_COMMAND_NAMES
 
     def builtin_summaries(self) -> dict[str, str]:
@@ -398,6 +411,7 @@ class Executor:
                 node = build_plan(block)
                 result = await self.execute_node(node, state, stdin=None, direct_output=True)
                 await self.drain_to_sink(result, state)
+                await self.finish_process_substitutions(state)
             except ShellSyntaxError as error:
                 state.write_error(f"bash: {error}\n")
                 state.last_exit_code = EXIT_CODE_USAGE_ERROR
@@ -450,15 +464,37 @@ class Executor:
             Everything the script wrote to standard output, and its exit code
         """
         collector = CollectingSink(self.output_limit_characters)
+        outer_substitutions = state.process_substitutions
+        state.process_substitutions = []
         try:
             with redirected_sinks(state, output_sink=collector):
                 exit_code = await self.run_subshell_script(script, state)
         except OutputLimitExceededError as error:
             if error.collector is not collector:
                 raise
-            state.write_error(f"bash: {error}\n")
-            exit_code = EXIT_CODE_BROKEN_PIPE
+            raise ExpansionError(f"command substitution: {error}") from error
+        finally:
+            state.process_substitutions = outer_substitutions
         return collector.text(), exit_code
+
+    async def finish_process_substitutions(self, state: ShellState) -> None:
+        """Run the scripts of the block's ``>( )`` substitutions over what was written, then remove every file
+
+        Args:
+            state: The shell state holding the substitutions the block created
+        """
+        pending = state.process_substitutions
+        if not pending:
+            return
+        state.process_substitutions = []
+        try:
+            for substitution in pending:
+                if substitution.direction == ProcessSubstitutionDirection.OUTPUT:
+                    script = process_substitution_script(substitution.script, substitution.direction, substitution.path)
+                    await self.run_subshell_script(script, state.copy())
+        finally:
+            for substitution in pending:
+                substitution.path.unlink(missing_ok=True)
 
     def substitution_runner(self, state: ShellState) -> SubstitutionRunner:
         """Return the callback word expansion uses for ``$( )`` and backticks
@@ -548,6 +584,8 @@ class Executor:
             return (lambda inner: self.run_if(node, inner)), state, node.redirections
         if isinstance(node, ForNode):
             return (lambda inner: self.run_for(node, inner)), state, node.redirections
+        if isinstance(node, SelectNode):
+            return (lambda inner: self.run_select(node, inner)), state, node.redirections
         if isinstance(node, CaseNode):
             return (lambda inner: self.run_case(node, inner)), state, node.redirections
         if isinstance(node, WhileNode | UntilNode):
@@ -948,6 +986,57 @@ class Executor:
             state.loop_depth -= 1
         return exit_code
 
+    async def run_select(self, node: SelectNode, state: ShellState) -> int:
+        """Run a select loop: show the menu, read a choice, bind it and run the body until the input ends
+
+        The menu is printed to standard error, then the ``PS3`` prompt. An empty line shows the menu again,
+        a number picks that word, and anything else binds the variable to nothing. ``REPLY`` holds the line
+
+        Args:
+            node: The select loop
+            state: The shell state to run against
+
+        Returns:
+            The exit code of the last body run, or zero when the loop never ran
+        """
+        if node.words_text is None:
+            values = list(state.positional_arguments)
+        else:
+            words, redirections, assignments = tokenize_simple_command(node.words_text)
+            if redirections or assignments:
+                raise ShellSyntaxError(f"bad select words: {node.words_text}")
+            values = await expand_words(words, state, self.substitution_runner(state))
+        exit_code = EXIT_CODE_SUCCESS
+        show_menu = True
+        state.loop_depth += 1
+        try:
+            while True:
+                if show_menu:
+                    state.write_error(format_select_menu(values, select_menu_width(state)))
+                state.write_error(state.variables.get(SELECT_PROMPT_VARIABLE_NAME, DEFAULT_SELECT_PROMPT))
+                record = await self.shell_builtins.read_record(ReadOptions(raw=True), None, state)
+                if record is None:
+                    state.write_error("\n")
+                    exit_code = EXIT_CODE_FAILURE
+                    break
+                reply = record[0]
+                state.variables[REPLY_VARIABLE_NAME] = reply
+                if not reply.strip():
+                    show_menu = True
+                    continue
+                show_menu = False
+                state.variables[node.variable] = select_choice(reply, values)
+                try:
+                    exit_code = await self.run_script(node.body, state)
+                except BreakLoop:
+                    exit_code = EXIT_CODE_SUCCESS
+                    break
+                except ContinueLoop:
+                    continue
+        finally:
+            state.loop_depth -= 1
+        return exit_code
+
     async def run_condition(self, script: str, state: ShellState) -> int:
         """Run the condition of an if or loop, where a failure must not stop the shell under errexit
 
@@ -1029,8 +1118,13 @@ class Executor:
             exit_code = run_substitution.last_exit_code
             return ExecutionResult.empty(EXIT_CODE_SUCCESS if exit_code is None else exit_code)
         saved_variables = {assignment.name: state.variables.get(assignment.name) for assignment in assignments}
+        saved_arrays = {assignment.name: state.arrays.get(assignment.name) for assignment in assignments}
+        temporarily_exported = {
+            assignment.name for assignment in assignments if assignment.name not in state.exported_names
+        }
         for assignment in assignments:
             await self.apply_assignment(assignment, state, run_substitution)
+            state.exported_names.add(assignment.name)
         error_destination = await self.error_destination(redirections, state, merge_stderr)
         try:
             stdin = await self.apply_input_redirections(stdin, redirections, state)
@@ -1050,11 +1144,7 @@ class Executor:
                 arguments[0], arguments[1:], stdin, error_destination, state, in_pipeline, attached_to_terminal
             )
         finally:
-            for name, value in saved_variables.items():
-                if value is None:
-                    state.variables.pop(name, None)
-                else:
-                    state.variables[name] = value
+            restore_temporary_assignments(saved_variables, saved_arrays, temporarily_exported, state)
         return await self.apply_output_redirections(result, redirections, state, error_destination, merge_stderr)
 
     async def run_builtin_as_compound(
@@ -2019,6 +2109,123 @@ def trace_assignment(assignment: Assignment) -> str:
         return f"{assignment.name}{operator}({inner})"
     subscript = f"[{assignment.index_text}]" if assignment.index_text is not None else ""
     return f"{assignment.name}{subscript}{operator}{assignment.value.raw_text()}"
+
+
+def select_choice(reply: str, values: list[str]) -> str:
+    """Return the word a select reply picks, or nothing when it is not a whole number in range
+
+    Args:
+        reply: The line typed at the prompt
+        values: The words on the menu
+
+    Returns:
+        The chosen word, or an empty string
+    """
+    if INTEGER_REPLY_PATTERN.match(reply) is None:
+        return ""
+    number = int(reply)
+    return values[number - 1] if 1 <= number <= len(values) else ""
+
+
+def select_menu_width(state: ShellState) -> int:
+    """Return the terminal width the select menu is laid out for
+
+    Args:
+        state: The shell state holding ``COLUMNS`` when the host set it
+
+    Returns:
+        The width in characters
+    """
+    columns_text = state.variables.get(COLUMNS_VARIABLE_NAME, "")
+    return int(columns_text) if columns_text.isdigit() and int(columns_text) > 0 else DEFAULT_TERMINAL_WIDTH
+
+
+def format_select_menu(values: list[str], width: int) -> str:
+    """Return the numbered menu bash prints for a select loop, laid out in columns the way bash does
+
+    Args:
+        values: The words on the menu
+        width: The terminal width to fit the columns into
+
+    Returns:
+        The menu text, ending in a newline
+    """
+    if not values:
+        return "\n"
+    count = len(values)
+    index_width = len(str(count))
+    cell_width = max(len(value) for value in values) + index_width + SELECT_INDEX_SUFFIX_LENGTH + SELECT_CELL_GAP
+    column_count = max(width // cell_width, 1)
+    row_count = count // column_count + (count % column_count != 0)
+    column_count = count // row_count + (count % row_count != 0)
+    if row_count == 1:
+        row_count, column_count = column_count, 1
+    first_column_index_width = len(str(row_count))
+    lines: list[str] = []
+    for row in range(row_count):
+        index = row
+        position = 0
+        pieces: list[str] = []
+        while True:
+            current_index_width = first_column_index_width if position == 0 else index_width
+            cell = f"{index + 1:>{current_index_width}}) {values[index]}"
+            pieces.append(cell)
+            index += row_count
+            if index >= count:
+                break
+            pieces.append(select_menu_indent(position + len(cell), position + cell_width))
+            position += cell_width
+        lines.append("".join(pieces) + "\n")
+    return "".join(lines)
+
+
+def select_menu_indent(start: int, end: int) -> str:
+    """Return the blanks that move from one column position to another, using tabs where bash does
+
+    Args:
+        start: The column position after the cell just printed
+        end: The column position of the next cell
+
+    Returns:
+        Tabs and spaces
+    """
+    pieces: list[str] = []
+    position = start
+    while position < end:
+        if end // TAB_WIDTH > position // TAB_WIDTH:
+            pieces.append("\t")
+            position += TAB_WIDTH - position % TAB_WIDTH
+        else:
+            pieces.append(" ")
+            position += 1
+    return "".join(pieces)
+
+
+def restore_temporary_assignments(
+    saved_variables: dict[str, str | None],
+    saved_arrays: dict[str, dict[int, str] | None],
+    temporarily_exported: set[str],
+    state: ShellState,
+) -> None:
+    """Put back the variables and arrays a command's temporary assignments replaced and drop their export marks
+
+    Args:
+        saved_variables: Each assigned name with the scalar it held before, None when it held none
+        saved_arrays: Each assigned name with the array it held before, None when it held none
+        temporarily_exported: The assigned names that were not exported before the command
+        state: The shell state to restore
+    """
+    for name, value in saved_variables.items():
+        if value is None:
+            state.variables.pop(name, None)
+        else:
+            state.variables[name] = value
+    for name, elements in saved_arrays.items():
+        if elements is None:
+            state.arrays.pop(name, None)
+        else:
+            state.arrays[name] = elements
+    state.exported_names.difference_update(temporarily_exported)
 
 
 def restore_local_scope(scope: dict[str, tuple[str | None, dict[int, str] | None]], state: ShellState) -> None:

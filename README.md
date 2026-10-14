@@ -66,10 +66,15 @@ Commands shipped: `[`, `base64`, `basename`, `cat`, `chmod`, `column`, `cp`, `cu
 `uniq`, `unzip`, `wc`, `which`, `whoami`, `xxd`, `yes`, `zip`. Every command takes `--help`; `-h` is left
 free for the commands that use it, such as `ls -h` and `grep -h`. `help` lists them all with a summary.
 
-Known limitations: `select`, process substitution, `exec`, `trap` and `getopts` are not
-implemented; `>&2` followed by a later `2>` redirection is resolved in order, but a `|&` pipe
-combined with `>&2` is not; a `$( )` substitution that never stops
-writing is cut off at the executor's output limit.
+`select` prints its menu and `PS3` prompt to standard error and reads the choice from standard input, laid
+out in columns the way bash does. Process substitution `<( )` and `>( )` hands the command a temporary file
+in place of a pipe: an input substitution is filled before the command runs, an output substitution is fed
+to its script once the command's block has finished, and the file is removed afterwards.
+
+Known limitations: `exec`, `trap` and `getopts` are not implemented; `>&2` followed by a later `2>`
+redirection is resolved in order, but a `|&` pipe combined with `>&2` is not; a `$( )` substitution that
+never stops writing, such as `echo "$(yes)"`, is stopped at the executor's output limit (16 MiB by default)
+and fails the command with an error, where real bash would hang.
 
 `bash_purepython.continuation.script_needs_more_lines` tells an interactive host whether the lines typed so
 far still leave a quote, heredoc, group or compound command open, so it can prompt for another line.

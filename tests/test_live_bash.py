@@ -760,6 +760,13 @@ SCRIPTS = [
     "f() { echo fn; }; f | cat; ls nothing 2>&1 | grep -c nothing; echo $(( 2 ** 10 )) ${#@}",
     "mkdir -p m; cd m; echo $PWD | grep -c m; cd ..; pushd m > /dev/null; dirs | grep -c m; popd > /dev/null; echo ok",
     "echo $$ > /dev/null; echo $PPID > /dev/null; echo ${BASH_VERSION%%.*}; echo $RANDOM | grep -qE '^[0-9]+$' && echo random; echo $SECONDS",
+    'select x in a b c; do echo "[$x] [$REPLY]"; break; done <<< 2 2>&1; select x in a b; do echo "[$x]"; done <<< $\'\\n9\\n 1 \\nzz\' 2>&1; echo $?',
+    "select x in alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu; do break; done <<< 1 2>&1; COLUMNS=20; select x in a b c d e f g h i j k l; do break; done <<< 1 2>&1",
+    "PS3='pick: '; set -- p q; select x; do echo $x; break; done <<< 2 2>&1; select x in a; do echo $x; done < /dev/null 2>&1; echo after",
+    "cat <(echo hi); paste -d, <(printf '1\\n2\\n') <(printf 'x\\ny\\n'); while read -r l; do echo \"got $l\"; done < <(printf 'p\\nq\\n'); echo hello | tee >(tr a-z A-Z) > /dev/null; sleep 0.2",
+    'set --; echo "[${1-default}]"; set -- \'\' b; echo "[${1-d}] [${1:-d}] [${2-d}] [${3-d}]"; x=(a b); x[5]=f; echo "${x[-1]}"; declare -a arr=(x y); echo "${arr[1]} ${#arr[@]}"',
+    "case 1 in 1) echo in case ;; esac; printf 'b 2\\na 10\\nc 1\\n' | sort -k2,2nr; echo 'f(x)' | grep 'f(x)'; echo ab | grep -E 'x|b'; read -r -d '' v <<< $'l1\\nl2'; echo \"<$v>\"",
+    "printf 'a' | sed -e '$a\\' | od -c | head -n 1; printf 'a\\n' | sed -e 'a\\' -e 'text'; A=1 env | grep -c '^A=1'; A=1 true; echo \"[${A-unset}]\"; FOO=(a b) true; echo \"[${FOO[0]-unset}]\"",
 ]
 
 

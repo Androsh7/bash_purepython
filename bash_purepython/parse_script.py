@@ -7,6 +7,7 @@ from enum import StrEnum
 
 COMPOUND_OPENING_KEYWORDS = frozenset({"if", "for", "while", "until", "case", "select"})
 COMPOUND_CLOSING_KEYWORDS = frozenset({"fi", "done", "esac"})
+FUNCTION_NAME_EXCLUDING_CHARACTERS = frozenset("=<>")
 KEYWORDS_FOLLOWED_BY_A_COMMAND = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "time"})
 WORD_BREAK_CHARACTERS = frozenset(" \t\n;&|()<>{}'\"\\`$")
 WHITESPACE_CHARACTERS = frozenset(" \t")
@@ -367,7 +368,7 @@ class ScriptSplitter:
         elif (
             self.top_level_word_count == 1
             and not (self.saw_top_level_pipe or self.saw_top_level_and_or)
-            and self._previous_character() != "="
+            and self._previous_character() not in FUNCTION_NAME_EXCLUDING_CHARACTERS
         ):
             self.is_function_definition = True
 

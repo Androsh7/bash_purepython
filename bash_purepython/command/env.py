@@ -9,7 +9,7 @@ ASSIGNMENT_SEPARATOR = "="
 
 
 class EnvCommand(Command):
-    """Print the shell's variables"""
+    """Print the exported variables"""
 
     name = "env"
     summary = "print the environment"
@@ -17,7 +17,7 @@ class EnvCommand(Command):
     output_kinds = frozenset({OutputKind.TEXT})
 
     def run(self, invocation: CommandInvocation) -> CommandResult:
-        """Print every variable as name=value, after applying any assignments given
+        """Print every exported variable as name=value, after applying any assignments given
 
         Args:
             invocation: The call to perform
@@ -35,7 +35,7 @@ class EnvCommand(Command):
         parsed = parse_command_arguments(parser, invocation.arguments, invocation.state)
         if isinstance(parsed, int):
             return CommandResult(stdout="", exit_code=parsed)
-        variables = {} if parsed.ignore_environment else dict(invocation.state.variables)
+        variables = {} if parsed.ignore_environment else invocation.state.exported_variables()
         for name in parsed.unset:
             variables.pop(name, None)
         for assignment in parsed.assignments:

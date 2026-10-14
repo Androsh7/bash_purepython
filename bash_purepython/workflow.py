@@ -136,6 +136,16 @@ class ForNode:
 
 
 @dataclass(frozen=True)
+class SelectNode:
+    """Hold a select loop that offers a numbered menu of words and binds the chosen one"""
+
+    variable: str
+    words_text: str | None
+    body: str
+    redirections: list[Redirection] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class WhileNode:
     """Hold a loop that runs while its condition succeeds"""
 
@@ -171,6 +181,7 @@ PlanNode = (
     | IfNode
     | CaseNode
     | ForNode
+    | SelectNode
     | WhileNode
     | UntilNode
     | FunctionDefinitionNode

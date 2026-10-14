@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `command`, `alias`, `unalias`, `pushd`, `popd`, `dirs`, `let`, `declare`, `typeset`, `readonly`, `hash`,
   `xargs` (`-n`, `-I`, `-0`, `-d`, `-t`), and `printf -v`. `exec`, `trap` and `getopts` say they are not
   supported instead of being unknown
+- `select` loops, with the menu and `PS3` prompt on standard error, bash's column layout, `REPLY`, and an
+  empty line showing the menu again
+- Process substitution `<( )` and `>( )`, backed by a temporary file that is removed once the command's
+  block has finished
 - Syntax: `>&2`, `1>&2`, `>&1`, `2>&2`, `>&-` and `2>&-`; `case`/`esac` with `;;`, `;&` and `;;&`;
   `for (( ; ; ))`; brace expansion (`{a,b}`, `{1..5}`, `{01..03}`, `{a..e}`, `{1..10..2}`, nested);
   ANSI-C quoting `$'...'`; `IFS` word splitting; the parameter operators `${x#} ${x##} ${x%} ${x%%}
@@ -62,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `grep` patterns are POSIX basic regular expressions, extended with `-E`, rather than Python regular
   expressions, so `grep 'f(x)'` matches the literal text
+- A `$( )` substitution that reaches the executor's output limit, such as `echo "$(yes)"`, now fails the
+  command with an error instead of continuing with the truncated output
+- A `NAME=value` prefix on a command is exported to that command only, and `env` prints only exported
+  variables
 
 - `PyodideSession` accepts the host commands as a mapping of names to summaries as well as a list, and
   gives the shell state a `read_line` callback that reads the terminal through standard input
