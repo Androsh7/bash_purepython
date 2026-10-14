@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from bash_purepython.command.arguments import CommandArgumentParser, parse_command_arguments
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
 from bash_purepython.command.lines import file_lines
+from bash_purepython.command.sed import translate_regex
 from bash_purepython.command.sources import STDIN_LABEL, STDIN_PATH, open_source, source_paths
 from bash_purepython.shell_state import EXIT_CODE_SUCCESS, EXIT_CODE_USAGE_ERROR
 from bash_purepython.streams import as_async_iterator
@@ -299,7 +300,7 @@ class GrepCommand(Command):
             "-E",
             "--extended-regexp",
             action="store_true",
-            help="accepted, patterns are always Python regular expressions",
+            help="patterns are extended regular expressions",
         )
         parser.add_argument("-l", "--files-with-matches", action="store_true", help="print only matching file names")
         parser.add_argument("-H", "--with-filename", action="store_true", help="always print the file name")
@@ -325,13 +326,16 @@ class GrepCommand(Command):
                 invocation.state.write_error("grep: no pattern given\n")
                 return CommandResult(stdout=as_async_iterator(()), exit_code=EXIT_CODE_USAGE_ERROR)
             patterns.append(remaining.pop(0))
-        alternatives = [re.escape(pattern) if parsed.fixed_strings else pattern for pattern in patterns]
-        combined = "|".join(f"(?:{alternative})" for alternative in alternatives)
-        if parsed.line_regexp:
-            combined = f"^(?:{combined})$"
-        elif parsed.word_regexp:
-            combined = rf"(?<!\w)(?:{combined})(?!\w)"
         try:
+            alternatives = [
+                re.escape(pattern) if parsed.fixed_strings else translate_regex(pattern, parsed.extended_regexp)
+                for pattern in patterns
+            ]
+            combined = "|".join(f"(?:{alternative})" for alternative in alternatives)
+            if parsed.line_regexp:
+                combined = f"^(?:{combined})$"
+            elif parsed.word_regexp:
+                combined = rf"(?<!\w)(?:{combined})(?!\w)"
             regex = re.compile(combined, re.IGNORECASE if parsed.ignore_case else 0)
         except re.error as error:
             invocation.state.write_error(f"grep: invalid pattern: {error}\n")

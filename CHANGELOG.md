@@ -44,8 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than straight to the terminal
 - Files written by `>` and `>>` keep `\n` line ends on Windows hosts instead of gaining `\r\n`
 - The engine exits with 127 on an unbound variable under `set -u`, as bash does
+- A positional parameter that was never given counts as unset, so `${1-default}`, `${1?message}` and
+  `set -u` behave as in bash; a negative array subscript counts back from the highest index of a sparse array
+- `declare -a name=(...)` and `local -a name=(...)` populate the array instead of receiving `name=`
+- The word `case` as an argument inside a `case` clause no longer opens a nested statement
+- `head` run with nothing piped in exits cleanly instead of aborting the script
+- `sort` honours the `r` modifier on a `-k` key; `read -d ''` reads to the end of the input
+- `zip` adds to an existing archive, accepts absolute sources, skips itself under `-r .` and reports a
+  missing archive directory; `unzip` and `tar` report encrypted, corrupt or truncated archives instead of
+  crashing; `tar -c` reports a missing archive directory
+- `sed -i` keeps `\r\n` line ends in the edited file and the backup; `a`, `i` and `c` text may continue into
+  the next `-e`, so `sed '$a\'` adds a missing final newline
+- `chmod` accepts permission copies (`g=u`) and several operators in one clause (`u+x-w`), and reports a
+  dangling symlink under `-R` instead of crashing
 
 ### Changed
+
+- `grep` patterns are POSIX basic regular expressions, extended with `-E`, rather than Python regular
+  expressions, so `grep 'f(x)'` matches the literal text
 
 - `PyodideSession` accepts the host commands as a mapping of names to summaries as well as a list, and
   gives the shell state a `read_line` callback that reads the terminal through standard input

@@ -156,3 +156,48 @@ def test_arrays(shell: ShellHarness, script: str, expected: str) -> None:
     run = shell.run(script)
 
     assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('set --; echo "[${1-default}]"', "[default]\n"),
+        ('set -- ""; echo "[${1-default}] [${1:-default}]"', "[] [default]\n"),
+        ('set -- a; echo "[${1-default}] [${2-default}]"', "[a] [default]\n"),
+        ('echo "[${0-default}] [${?-default}]"', "[bash] [0]\n"),
+    ],
+    ids=["unset_positional", "empty_positional", "second_positional", "special_parameters_always_set"],
+)
+def test_positional_parameters_count_as_set_only_when_given(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that a default applies to a positional parameter that was never given"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+@pytest.mark.parametrize(
+    "script",
+    ['set --; echo "${1?missing}"', 'set --; set -u; echo "$1"', 'set --; set -u; echo "${1}"'],
+    ids=["error_operator", "nounset_bare", "nounset_braced"],
+)
+def test_unset_positional_parameter_is_reported(shell: ShellHarness, script: str) -> None:
+    """Check that an unset positional parameter fails under ${1?} and set -u"""
+    run = shell.run(script)
+
+    assert run.stdout == ""
+    assert run.exit_code != 0
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('x=(a b); x[5]=f; echo "${x[-1]}"', "f\n"),
+        ('x=(a b c); unset x[1]; echo "${x[-1]} ${x[-3]}"', "c a\n"),
+    ],
+    ids=["sparse_tail", "after_unset"],
+)
+def test_negative_subscript_counts_back_from_the_highest_index(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that a negative subscript on a sparse array reaches the last element bash would"""
+    run = shell.run(script)
+
+    assert run.stdout == expected

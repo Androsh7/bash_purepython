@@ -9,7 +9,7 @@ from enum import StrEnum
 # Project libraries
 from bash_purepython.command.arguments import CommandArgumentParser, parse_command_arguments
 from bash_purepython.command.command import Command, CommandInvocation, CommandResult, InputKind, OutputKind
-from bash_purepython.command.lines import close_stdin, file_lines, stdin_lines
+from bash_purepython.command.lines import close_stdin, file_lines, iterate_lines, stdin_lines
 from bash_purepython.shell_state import EXIT_CODE_SUCCESS, NULL_DEVICE_PATH
 from bash_purepython.streams import TEXT_ENCODING, as_async_iterator, close_iterator
 
@@ -703,7 +703,8 @@ class ScriptParser:
             The text without its trailing newline
         """
         self.skip_blanks()
-        if self.peek() == "\\":
+        backslash_form = self.peek() == "\\"
+        if backslash_form:
             self.position += 1
             if self.peek() == "\n":
                 self.position += 1
@@ -719,7 +720,7 @@ class ScriptParser:
             else:
                 characters.append(character)
         text = "".join(characters)
-        if not text:
+        if not text and not backslash_form:
             raise self.error("expected \\ after `a', `c' or `i'")
         return text
 
@@ -802,7 +803,7 @@ class SedProgram:
             cycle.output.append(cycle.pattern_space + "\n")
         cycle.output.extend(cycle.appended)
         text = "".join(cycle.output)
-        if not has_newline and text.endswith("\n"):
+        if not has_newline and text.endswith("\n") and not cycle.appended:
             text = text[:-1]
         return text, outcome in (CycleOutcome.QUIT, CycleOutcome.QUIT_SILENT)
 
@@ -843,7 +844,7 @@ class SedProgram:
             elif kind == InstructionKind.LINE_NUMBER:
                 cycle.output.append(f"{cycle.line_number}\n")
             elif kind == InstructionKind.APPEND:
-                cycle.appended.append(instruction.text + "\n")
+                cycle.appended.append(instruction.text + "\n" if instruction.text else "")
             elif kind == InstructionKind.INSERT:
                 cycle.output.append(instruction.text + "\n")
             elif kind == InstructionKind.CHANGE:
@@ -945,6 +946,24 @@ class SedProgram:
         return False
 
 
+def join_continued_expressions(expressions: list[str]) -> list[str]:
+    """Return the expressions with each one ending in a backslash joined to the next by a newline
+
+    Args:
+        expressions: The ``-e`` expressions in order
+
+    Returns:
+        The expressions, with the text of an ``a``, ``i`` or ``c`` command carried over from the next
+    """
+    joined: list[str] = []
+    for expression in expressions:
+        if joined and joined[-1].endswith("\\"):
+            joined[-1] = joined[-1] + "\n" + expression
+        else:
+            joined.append(expression)
+    return joined
+
+
 def compile_script(expressions: list[str], extended: bool) -> list[Instruction]:
     """Return the instructions of every expression in order
 
@@ -959,7 +978,7 @@ def compile_script(expressions: list[str], extended: bool) -> list[Instruction]:
         The instructions
     """
     instructions: list[Instruction] = []
-    for offset, expression in enumerate(expressions):
+    for offset, expression in enumerate(join_continued_expressions(expressions)):
         instructions.extend(ScriptParser(expression, FIRST_EXPRESSION_NUMBER + offset, extended).parse())
     return instructions
 
@@ -1007,6 +1026,24 @@ def extract_in_place(arguments: list[str]) -> tuple[list[str], str | None]:
         if kept != "-":
             remaining.append(kept)
     return remaining, suffix
+
+
+async def text_line_pairs(text: str) -> AsyncIterator[tuple[str, bool]]:
+    """Yield each line of a text, paired with whether it is the last line
+
+    Args:
+        text: The whole text, with its line endings as they are on disk
+
+    Yields:
+        Each line with its newline kept, and the last-line flag
+    """
+    pending: str | None = None
+    async for line in iterate_lines([text]):
+        if pending is not None:
+            yield pending, False
+        pending = line
+    if pending is not None:
+        yield pending, True
 
 
 async def source_line_pairs(invocation: CommandInvocation, paths: list[str]) -> AsyncIterator[tuple[str, bool]]:
@@ -1122,11 +1159,12 @@ async def edit_in_place(invocation: CommandInvocation, program: SedProgram, path
             invocation.state.write_error(f"sed: can't read {path_text}: No such file or directory\n")
             exit_code = EXIT_CODE_UNREADABLE_INPUT
             continue
-        original = path.read_text(encoding=TEXT_ENCODING, errors="replace")
+        with path.open(encoding=TEXT_ENCODING, errors="replace", newline="") as handle:
+            original = handle.read()
         program.start_file()
         pieces: list[str] = []
         quit_requested = False
-        async for line, is_last in source_line_pairs(invocation, [path_text]):
+        async for line, is_last in text_line_pairs(original):
             text, quit_requested = program.process_line(line, is_last)
             pieces.append(text)
             if quit_requested:

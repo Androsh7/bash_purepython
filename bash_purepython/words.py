@@ -30,6 +30,7 @@ ARRAY_VALUE_START_PATTERN = re.compile(r"^[A-Za-z_]\w*\+?=$")
 GLOB_CHARACTER_PATTERN = re.compile(r"[*?\[]")
 VARIABLE_NAME_PATTERN = re.compile(r"[A-Za-z_]\w*")
 SPECIAL_PARAMETER_CHARACTERS = frozenset("?#@*$!0123456789")
+ALWAYS_SET_SPECIAL_PARAMETER_CHARACTERS = frozenset("?#@*$!0")
 PARAMETER_PATTERN = re.compile(r"^(!?)([A-Za-z_]\w*|[?#@*$!0-9])(?:\[([^\]]+)\])?(.*)$", re.DOTALL)
 PARAMETER_OPERATOR_PATTERN = re.compile(r"^(:[-=+?]|[-=+?]|##|#|%%|%|//|/#|/%|/|\^\^|\^|,,|,|:)", re.DOTALL)
 DEFAULT_OPERATORS = frozenset({":-", "-", ":=", "=", ":+", "+", ":?", "?"})
@@ -238,8 +239,10 @@ class SimpleCommandTokenizer:
         assignment = self._as_assignment(word, array_words)
         if assignment is not None and not self.words:
             self.assignments.append(assignment)
-        else:
+        elif array_words is None:
             self.words.append(word)
+        else:
+            self.words.append(with_array_value(word, array_words))
 
     def _as_assignment(self, word: Word, array_words: list[Word] | None) -> Assignment | None:
         """Return the assignment a word denotes, or None when it is an ordinary word
@@ -685,6 +688,41 @@ def lookup_parameter(name: str, state: ShellState) -> str:
     return DEFAULT_VARIABLES.get(name, "")
 
 
+def with_array_value(word: Word, array_words: list[Word]) -> Word:
+    """Return a ``name=`` word with a parenthesised array value written back as one argument
+
+    The parentheses and the spaces between elements are kept out of field splitting, so a builtin such as
+    ``declare`` receives ``name=(first second)`` as a single argument
+
+    Args:
+        word: The ``name=`` or ``name+=`` word
+        array_words: The words inside the parentheses
+
+    Returns:
+        The combined word
+    """
+    parts = [*word.parts, WordPart(text="(", quote=QuoteStyle.DOUBLE)]
+    for offset, array_word in enumerate(array_words):
+        if offset:
+            parts.append(WordPart(text=" ", quote=QuoteStyle.DOUBLE))
+        parts.extend(array_word.parts)
+    parts.append(WordPart(text=")", quote=QuoteStyle.DOUBLE))
+    return Word(parts=parts)
+
+
+def positional_is_set(name: str, state: ShellState) -> bool:
+    """Return whether a digit name refers to a positional argument that was given
+
+    Args:
+        name: A parameter name
+        state: The shell state holding the positional arguments
+
+    Returns:
+        True when the name is a digit other than zero and at least that many arguments were given
+    """
+    return name.isdigit() and name != "0" and int(name) <= len(state.positional_arguments)
+
+
 def check_unset(name: str, state: ShellState) -> None:
     """Raise when an unset variable is expanded while ``set -u`` is on
 
@@ -789,7 +827,7 @@ async def resolve_array_index(
 
     Args:
         index_text: The subscript text, an arithmetic expression
-        element_count: How many elements the array has, for negative subscripts
+        element_count: One past the highest index the array holds, which negative subscripts count back from
         state: The shell state to read variables from
         run_substitution: Runs a script and returns its output
 
@@ -990,8 +1028,8 @@ async def resolve_parameter_reference(
         is_set = (
             name in state.variables
             or name in state.arrays
-            or (name.isdigit() and value != "")
-            or name in SPECIAL_PARAMETER_CHARACTERS
+            or name in ALWAYS_SET_SPECIAL_PARAMETER_CHARACTERS
+            or positional_is_set(name, state)
         )
         return ParameterReference(name=name, values=[value], is_set=is_set, all_elements=False, joiner="")
     elements = array_elements(name, state)
@@ -1006,7 +1044,7 @@ async def resolve_parameter_reference(
         return ParameterReference(
             name=name, values=list(elements.values()), is_set=bool(elements), all_elements=True, joiner=joiner
         )
-    index = await resolve_array_index(subscript, len(elements), state, run_substitution)
+    index = await resolve_array_index(subscript, max(elements, default=-1) + 1, state, run_substitution)
     return ParameterReference(
         name=name, values=[elements.get(index, "")], is_set=index in elements, all_elements=False, joiner=""
     )
@@ -1339,7 +1377,10 @@ async def expand_text(
                 pieces.append(POSITIONAL_FIELD_SEPARATOR.join(state.positional_arguments))
                 index += 2
             elif index + 1 < len(text) and text[index + 1] in SPECIAL_PARAMETER_CHARACTERS:
-                pieces.append(lookup_parameter(text[index + 1], state))
+                parameter = text[index + 1]
+                if parameter.isdigit() and not positional_is_set(parameter, state):
+                    check_unset(parameter, state)
+                pieces.append(lookup_parameter(parameter, state))
                 index += 2
             else:
                 pieces.append("$")

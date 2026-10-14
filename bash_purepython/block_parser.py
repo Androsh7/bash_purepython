@@ -43,6 +43,7 @@ FOR_ARITHMETIC_PATTERN = re.compile(r"^for\s*\(\((.*?)\)\)\s*;?\s*(?=do\b)", re.
 CASE_HEADER_PATTERN = re.compile(r"^case\s+(.+?)\s+in(?=\s)", re.DOTALL)
 CASE_CLOSING_KEYWORD = "esac"
 CASE_OPENING_KEYWORD = "case"
+COMMAND_PREFIX_WORDS = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"})
 CASE_TERMINATORS_LONGEST_FIRST = (CaseTerminator.CONTINUE_MATCHING, CaseTerminator.FALL_THROUGH, CaseTerminator.STOP)
 ARITHMETIC_FOR_PART_COUNT = 3
 FUNCTION_PATTERN = re.compile(r"^(?:function\s+)?([A-Za-z_][\w-]*)\s*(?:\(\s*\))?\s*([({].*[)}])$", re.DOTALL)
@@ -513,7 +514,7 @@ class CaseClauseScanner:
                         return body, terminator
                 if self._at_keyword(CASE_CLOSING_KEYWORD) and self._at_word_start():
                     return self.text[start : self.position].strip(), CaseTerminator.STOP
-            if self._at_keyword(CASE_OPENING_KEYWORD) and self._at_word_start():
+            if self._at_keyword(CASE_OPENING_KEYWORD) and self._at_command_start():
                 case_depth += 1
                 self.position += len(CASE_OPENING_KEYWORD)
                 continue
@@ -531,6 +532,20 @@ class CaseClauseScanner:
     def _at_word_start(self) -> bool:
         """Return whether the current position begins a word"""
         return self.position == 0 or self.text[self.position - 1] in " \t\n;&|(){}"
+
+    def _at_command_start(self) -> bool:
+        """Return whether the current position begins a command rather than an argument of one"""
+        if not self._at_word_start():
+            return False
+        index = self.position
+        while index > 0 and self.text[index - 1] in " \t":
+            index -= 1
+        if index == 0 or self.text[index - 1] in "\n;&|(){":
+            return True
+        word_end = index
+        while index > 0 and self.text[index - 1] not in " \t\n;&|(){}":
+            index -= 1
+        return self.text[index:word_end] in COMMAND_PREFIX_WORDS
 
     def _skip_quoted_or_nested(self) -> None:
         """Advance past one character, or past a whole quoted string or bracketed expansion"""

@@ -74,7 +74,7 @@ def test_grep_missing_file_exits_two(shell: ShellHarness, two_files: None) -> No
 
 def test_grep_bad_pattern_exits_two(shell: ShellHarness, two_files: None) -> None:
     """Check that an invalid regular expression is a usage error"""
-    run = shell.run("grep '(' a.txt")
+    run = shell.run("grep -E '(' a.txt")
 
     assert run.exit_code == 2
 
@@ -226,3 +226,32 @@ def test_grep_recursive_only_matching_prefixes_each_match(shell: ShellHarness, t
     run = shell.run("grep -ro 'app' .")
 
     assert run.stdout == "./a.txt:app\n./b.txt:app\n"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected", "exit_code"),
+    [
+        ("echo 'f(x)' | grep 'f(x)'", "f(x)\n", 0),
+        ("echo 'a+b' | grep 'a+b'", "a+b\n", 0),
+        ("echo 'aa' | grep 'a\\{2\\}'", "aa\n", 0),
+        ("echo 'ab' | grep -E 'a(b)'", "ab\n", 0),
+        ("echo 'ab' | grep -E 'x|b'", "ab\n", 0),
+        ("echo 'ab' | grep 'x|b'", "", 1),
+        ("echo 'aab' | grep -o 'a\\+'", "aa\n", 0),
+    ],
+    ids=[
+        "basic_parens",
+        "basic_plus",
+        "basic_interval",
+        "extended_group",
+        "extended_bar",
+        "basic_bar",
+        "basic_plus_escape",
+    ],
+)
+def test_grep_uses_posix_regex_dialects(shell: ShellHarness, script: str, expected: str, exit_code: int) -> None:
+    """Check that patterns are basic regular expressions unless -E is given"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+    assert run.exit_code == exit_code

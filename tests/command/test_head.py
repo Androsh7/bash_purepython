@@ -114,3 +114,12 @@ def test_head_negative_count_reads_standard_input(shell: ShellHarness) -> None:
     run = shell.run("printf 'a\\nb\\nc\\n' | head -n -1")
 
     assert run.stdout == "a\nb\n"
+
+
+@pytest.mark.parametrize("script", ["head", "head -", "head -n 3"], ids=["bare", "dash", "count"])
+def test_head_with_no_input_prints_nothing(shell: ShellHarness, script: str) -> None:
+    """Check that head run at the top level with nothing piped in exits cleanly"""
+    run = shell.run(script)
+
+    assert run.stdout == ""
+    assert run.exit_code == 0

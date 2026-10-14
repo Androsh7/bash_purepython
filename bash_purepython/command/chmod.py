@@ -11,7 +11,9 @@ from bash_purepython.command.command import Command, CommandInvocation, CommandR
 from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, ShellState
 
 OCTAL_MODE_PATTERN = re.compile(r"^[0-7]{1,4}$")
-CLAUSE_PATTERN = re.compile(r"^([ugoa]*)([+\-=])([rwxXst]*)$")
+CLAUSE_PATTERN = re.compile(r"^([ugoa]*)((?:[+\-=](?:[rwxXst]*|[ugo]))+)$")
+OPERATION_PATTERN = re.compile(r"([+\-=])([ugo]|[rwxXst]*)")
+COPYABLE_PERMISSION_LETTERS = "rwx"
 CLAUSE_SEPARATOR = ","
 DEFAULT_UMASK = 0o022
 ALL_PERMISSION_BITS = 0o777
@@ -69,6 +71,24 @@ def permission_mask(permissions: str, current_mode: int, is_directory: bool) -> 
     return mask
 
 
+def copied_permission_mask(source_class: str, current_mode: int) -> int:
+    """Return the bits across every class matching the permissions one class currently has
+
+    Args:
+        source_class: ``u``, ``g`` or ``o``, the class whose permissions are copied
+        current_mode: The mode before the change
+
+    Returns:
+        The selected bits
+    """
+    class_bits = current_mode & WHO_BITS[source_class] & ALL_PERMISSION_BITS
+    mask = 0
+    for letter in COPYABLE_PERMISSION_LETTERS:
+        if class_bits & PERMISSION_BITS[letter]:
+            mask |= PERMISSION_BITS[letter]
+    return mask
+
+
 def apply_mode(mode_text: str, current_mode: int, is_directory: bool) -> int | None:
     """Return the permission bits a mode argument produces from the current ones
 
@@ -87,17 +107,21 @@ def apply_mode(mode_text: str, current_mode: int, is_directory: bool) -> int | N
         match = CLAUSE_PATTERN.match(clause)
         if match is None:
             return None
-        who, operation, permissions = match.groups()
+        who, operations = match.groups()
         selected = who_mask(who)
         if not who:
             selected &= ~DEFAULT_UMASK
-        bits = permission_mask(permissions, mode, is_directory) & selected
-        if operation == "+":
-            mode |= bits
-        elif operation == "-":
-            mode &= ~bits
-        else:
-            mode = (mode & ~who_mask(who)) | bits
+        for operation, permissions in OPERATION_PATTERN.findall(operations):
+            if permissions in WHO_BITS:
+                bits = copied_permission_mask(permissions, mode) & selected
+            else:
+                bits = permission_mask(permissions, mode, is_directory) & selected
+            if operation == "+":
+                mode |= bits
+            elif operation == "-":
+                mode &= ~bits
+            else:
+                mode = (mode & ~who_mask(who)) | bits
     return mode
 
 
@@ -158,7 +182,11 @@ class ChmodCommand(Command):
         Returns:
             Zero on success, one on failure
         """
-        current_mode = stat.S_IMODE(path.stat().st_mode)
+        try:
+            current_mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            state.write_error(f"chmod: cannot operate on dangling symlink '{shown}'\n")
+            return EXIT_CODE_FAILURE
         new_mode = apply_mode(mode_text, current_mode, path.is_dir())
         if new_mode is None:
             return EXIT_CODE_FAILURE

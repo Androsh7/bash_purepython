@@ -2,9 +2,11 @@
 
 # Standard libraries
 import io
+import lzma
 import stat
 import tarfile
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -159,6 +161,9 @@ class TarCommand(Command):
         except tarfile.ReadError:
             state.write_error(f"tar: {options.archive}: This does not look like a tar archive\n")
             return CommandResult(stdout=b"", exit_code=TAR_FAILURE_EXIT_CODE)
+        except (EOFError, OSError, zlib.error, lzma.LZMAError):
+            state.write_error(f"tar: {options.archive}: Unexpected EOF in archive\n")
+            return CommandResult(stdout=b"", exit_code=TAR_FAILURE_EXIT_CODE)
 
     async def read_archive(self, archive_text: str, invocation: CommandInvocation) -> bytes | None:
         """Return the bytes of the archive named, or of standard input for ``-``
@@ -215,7 +220,11 @@ class TarCommand(Command):
             if verbose_text:
                 state.write_error(verbose_text)
             return CommandResult(stdout=buffer.getvalue(), exit_code=exit_code)
-        state.resolve_path(options.archive).write_bytes(buffer.getvalue())
+        try:
+            state.resolve_path(options.archive).write_bytes(buffer.getvalue())
+        except OSError as error:
+            state.write_error(f"tar: {options.archive}: Cannot open: {error.strerror}\n")
+            return CommandResult(stdout=b"", exit_code=TAR_FAILURE_EXIT_CODE)
         return CommandResult(stdout=verbose_text.encode(TEXT_ENCODING), exit_code=exit_code)
 
     def list_archive(self, archive: tarfile.TarFile, options: TarOptions) -> bytes:
@@ -277,6 +286,9 @@ class TarCommand(Command):
             archive.extractall(path=base, members=members, filter="data")
         except tarfile.FilterError as error:
             state.write_error(f"tar: {error}\n")
+            return CommandResult(stdout=b"", exit_code=TAR_FAILURE_EXIT_CODE)
+        except OSError as error:
+            state.write_error(f"tar: {error.filename}: Cannot open: {error.strerror}\n")
             return CommandResult(stdout=b"", exit_code=TAR_FAILURE_EXIT_CODE)
         if exit_code != EXIT_CODE_SUCCESS:
             state.write_error("tar: Exiting with failure status due to previous errors\n")

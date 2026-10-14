@@ -27,6 +27,24 @@ KEY_MODIFIER_REVERSE = "r"
 KEY_MODIFIER_BLANKS = "b"
 
 
+@dataclass(frozen=True)
+class ReversedKey:
+    """Wrap a comparable value so it orders the other way round, for a key with the ``r`` modifier"""
+
+    value: Any
+
+    def __lt__(self, other: "ReversedKey") -> bool:
+        """Return whether this key sorts before another, which is when its value is the larger
+
+        Args:
+            other: The key to compare with
+
+        Returns:
+            True when this key comes first in reversed order
+        """
+        return other.value < self.value
+
+
 def numeric_value(text: str) -> float:
     """Return the number a line starts with, or zero when it starts with none
 
@@ -183,7 +201,8 @@ def build_key_function(
             key_numeric = numeric or KEY_MODIFIER_NUMERIC in key.modifiers
             key_human = human or KEY_MODIFIER_HUMAN in key.modifiers
             key_fold = fold_case or KEY_MODIFIER_FOLD in key.modifiers
-            parts.append(compare_key(key.extract(line, separator), key_numeric, key_human, key_fold))
+            value = compare_key(key.extract(line, separator), key_numeric, key_human, key_fold)
+            parts.append(ReversedKey(value) if KEY_MODIFIER_REVERSE in key.modifiers else value)
         return tuple(parts)
 
     return key_of

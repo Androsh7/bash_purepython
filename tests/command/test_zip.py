@@ -75,3 +75,60 @@ def test_zip_reports_a_missing_source(shell: ShellHarness, tmp_path: Path, sourc
     assert "missing.txt" in run.stderr
     with zipfile.ZipFile(tmp_path / "out.zip") as archive:
         assert archive.namelist() == ["a.txt"]
+
+
+def test_zip_accepts_an_absolute_source_path(shell: ShellHarness, tmp_path: Path, source_tree: None) -> None:
+    """Check that an absolute source is stored under a relative entry name"""
+    run = shell.run(f'zip out.zip "{(tmp_path / "a.txt").as_posix()}"')
+
+    with zipfile.ZipFile(tmp_path / "out.zip") as archive:
+        names = archive.namelist()
+    assert run.exit_code == 0
+    assert len(names) == 1
+    assert names[0].endswith("a.txt")
+    assert not names[0].startswith("/")
+
+
+def test_zip_adds_to_an_existing_archive(shell: ShellHarness, tmp_path: Path, source_tree: None) -> None:
+    """Check that a second zip call keeps the entries the first one wrote"""
+    shell.run("zip out.zip a.txt")
+
+    run = shell.run("zip out.zip project/b.txt")
+
+    with zipfile.ZipFile(tmp_path / "out.zip") as archive:
+        assert set(archive.namelist()) == {"a.txt", "project/b.txt"}
+        assert archive.read("a.txt") == b"alpha alpha alpha\n"
+    assert run.exit_code == 0
+
+
+def test_zip_replaces_a_changed_entry(shell: ShellHarness, tmp_path: Path, source_tree: None) -> None:
+    """Check that re-adding a file updates its contents and says so"""
+    shell.run("zip out.zip a.txt")
+    (tmp_path / "a.txt").write_bytes(b"changed\n")
+
+    run = shell.run("zip out.zip a.txt")
+
+    with zipfile.ZipFile(tmp_path / "out.zip") as archive:
+        assert archive.read("a.txt") == b"changed\n"
+    assert run.stdout.startswith("updating: a.txt")
+
+
+def test_zip_reports_a_missing_archive_directory(shell: ShellHarness, tmp_path: Path, source_tree: None) -> None:
+    """Check that an archive path in a missing directory fails with a message rather than a crash"""
+    run = shell.run("zip nodir/out.zip a.txt")
+
+    assert run.exit_code != 0
+    assert "nodir/out.zip" in run.stderr
+    assert not (tmp_path / "nodir").exists()
+
+
+def test_zip_recursing_the_current_directory_skips_the_archive(
+    shell: ShellHarness, tmp_path: Path, source_tree: None
+) -> None:
+    """Check that the archive being written is never added to itself"""
+    run = shell.run("zip -r out.zip .")
+
+    with zipfile.ZipFile(tmp_path / "out.zip") as archive:
+        assert "out.zip" not in archive.namelist()
+        assert "a.txt" in archive.namelist()
+    assert run.exit_code == 0

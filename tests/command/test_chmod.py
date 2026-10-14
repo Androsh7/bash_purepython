@@ -132,3 +132,27 @@ def test_chmod_reports_an_invalid_mode(shell: ShellHarness, tmp_path: Path) -> N
 
     assert run.exit_code == 1
     assert "invalid mode" in run.stderr
+
+
+@pytest.mark.parametrize(
+    ("mode_text", "current_mode", "expected"),
+    [
+        ("g=u", 0o640, 0o660),
+        ("o=g", 0o640, 0o644),
+        ("u+g", 0o460, 0o660),
+        ("u+x-w", 0o644, 0o544),
+        ("a=rw+x", 0o000, 0o777),
+        ("u=rwx,g=u,o-rwx", 0o000, 0o770),
+    ],
+    ids=[
+        "copy_user_to_group",
+        "copy_group_to_other",
+        "add_group_bits_to_user",
+        "two_operators",
+        "assign_then_add",
+        "clauses",
+    ],
+)
+def test_apply_mode_accepts_copies_and_several_operators(mode_text: str, current_mode: int, expected: int) -> None:
+    """Check that a clause may copy another class's bits and chain more than one operator"""
+    assert apply_mode(mode_text, current_mode, False) == expected

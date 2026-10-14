@@ -144,6 +144,8 @@ def source_lines(path_text: str, invocation: CommandInvocation) -> AsyncIterator
         An async iterator over the lines, or None
     """
     if path_text == STDIN_PATH:
+        if invocation.stdin_kind == InputKind.ARGUMENTS:
+            return as_async_iterator(())
         return stdin_lines(invocation.stdin, invocation.stdin_kind)
     return read_file_lines(path_text, invocation.state)
 

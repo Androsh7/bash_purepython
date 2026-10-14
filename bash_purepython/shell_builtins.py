@@ -66,6 +66,7 @@ OPTION_NAMES = {
 }
 ALIAS_DEFINITION_PATTERN = re.compile(r"^([^=\s/]+)=(.*)$", re.DOTALL)
 NAME_PATTERN = re.compile(r"^[A-Za-z_]\w*$")
+NUL_DELIMITER = "\0"
 DECLARE_ATTRIBUTE_LETTERS = frozenset("aixrfFgp")
 UNSUPPORTED_BUILTINS = ("exec", "trap", "getopts")
 BUILTIN_SUMMARIES = {
@@ -160,6 +161,20 @@ class LineSource:
         await close_iterator(self.chunks)
 
 
+def parse_array_literal(value: str) -> dict[int, str] | None:
+    """Return the elements of a ``(first second)`` value, or None when the value is not one
+
+    Args:
+        value: The text after the equals sign of a declaration
+
+    Returns:
+        The elements split on whitespace, indexed from zero, or None
+    """
+    if not (value.startswith("(") and value.endswith(")")):
+        return None
+    return dict(enumerate(value[1:-1].split()))
+
+
 @dataclass
 class ReadOptions:
     """Hold the options of one ``read`` call"""
@@ -208,7 +223,7 @@ def parse_read_options(arguments: list[str]) -> ReadOptions | str:
                 elif letter == "a":
                     options.array_name = value
                 elif letter == "d":
-                    options.delimiter = value[:1]
+                    options.delimiter = value[:1] or NUL_DELIMITER
                 elif letter in "nN":
                     if not value.isdigit():
                         return f"read: {value}: invalid number"
@@ -679,9 +694,13 @@ class ShellBuiltins:
                 state.write_error(f"bash: local: `{argument}': not a valid identifier\n")
                 return EXIT_CODE_FAILURE
             self.remember_outer_value(name, state)
-            if make_array:
+            elements = parse_array_literal(value) if separator else None
+            if make_array or elements is not None:
                 state.variables.pop(name, None)
-                state.arrays[name] = {}
+                if elements is not None:
+                    state.arrays[name] = elements
+                else:
+                    state.arrays[name] = {0: value} if separator else {}
             elif separator:
                 state.arrays.pop(name, None)
                 state.variables[name] = value
@@ -1012,11 +1031,12 @@ class ShellBuiltins:
                 elements = state.arrays.setdefault(
                     name, {0: state.variables.pop(name)} if name in state.variables else {}
                 )
+                literal_elements = parse_array_literal(value) if separator else None
                 if index_text is not None:
                     elements[evaluate_arithmetic(index_text, state)] = value
-                elif separator and value.startswith("(") and value.endswith(")"):
+                elif literal_elements is not None:
                     elements.clear()
-                    elements.update(enumerate(value[1:-1].split()))
+                    elements.update(literal_elements)
             elif separator:
                 state.arrays.pop(name, None)
                 state.variables[name] = value

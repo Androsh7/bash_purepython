@@ -135,3 +135,25 @@ def test_tar_requires_exactly_one_mode(shell: ShellHarness) -> None:
     run = shell.run("tar -f out.tar")
 
     assert run.exit_code == 2
+
+
+def test_tar_reports_a_truncated_compressed_archive(shell: ShellHarness, tmp_path: Path) -> None:
+    """Check that a gzip stream cut short fails with a message rather than a crash"""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        archive.add(tmp_path, arcname="dir", recursive=False)
+    whole = gzip.compress(buffer.getvalue())
+    (tmp_path / "truncated.tar.gz").write_bytes(whole[: len(whole) // 2])
+
+    run = shell.run("tar -xzf truncated.tar.gz")
+
+    assert run.exit_code == 2
+    assert "truncated.tar.gz" in run.stderr
+
+
+def test_tar_reports_a_missing_archive_directory(shell: ShellHarness, source_tree: None) -> None:
+    """Check that writing an archive into a missing directory fails with a message"""
+    run = shell.run("tar -cf nodir/out.tar project")
+
+    assert run.exit_code == 2
+    assert "nodir/out.tar" in run.stderr

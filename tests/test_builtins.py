@@ -255,3 +255,27 @@ def test_jobs_lists_in_bash_layout_and_kill_takes_a_job_spec(shell: ShellHarness
         "[1]-  Running                 sleep 5 &\n[2]+  Running                 sleep 5 &\n"
         "[1]-  Terminated              sleep 5\n[2]+  Running                 sleep 5 &\nwaited\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('declare -a arr=(x y); echo "${arr[1]} ${#arr[@]}"', "y 2\n"),
+        ('f() { local -a arr=(p q r); echo "${arr[2]} ${#arr[@]}"; }; f', "r 3\n"),
+        ('f() { local arr=(p q); echo "${arr[1]}"; }; f', "q\n"),
+        ('v=x; declare -a arr=($v "$v"y); echo "${arr[0]} ${arr[1]}"', "x xy\n"),
+    ],
+    ids=["declare", "local_with_flag", "local_without_flag", "expanded_elements"],
+)
+def test_declare_and_local_accept_array_literals(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that an array literal after declare or local populates the array"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+
+
+def test_read_with_an_empty_delimiter_reads_to_the_end(shell: ShellHarness) -> None:
+    """Check that read -d '' slurps every line rather than one character"""
+    run = shell.run("read -r -d '' v <<< $'line1\\nline2'; echo \"<$v>\"")
+
+    assert run.stdout == "<line1\nline2>\n"

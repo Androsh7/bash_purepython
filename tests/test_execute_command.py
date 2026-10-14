@@ -717,3 +717,23 @@ def test_heredoc_inside_a_command_substitution_feeds_the_inner_command(shell: Sh
     run = shell.run("x=$(cat <<EOF\nhello\nEOF\n); echo $x; echo $(cat <<EOF | rev\nabc\nEOF\n) after")
 
     assert (run.stdout, run.stderr) == ("hello\ncba after\n", "")
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("case 1 in 1) echo in case ;; esac", "in case\n"),
+        ("case 1 in 1) echo a; case 2 in 2) echo nested ;; esac ;; esac", "a\nnested\n"),
+        ("case 1 in 1) if true; then case 2 in 2) echo deep ;; esac; fi ;; esac", "deep\n"),
+        ("case x in x) echo first; echo case;; *) echo other;; esac", "first\ncase\n"),
+    ],
+    ids=["word_as_argument", "nested", "nested_after_then", "word_before_terminator"],
+)
+def test_case_body_treats_the_word_case_as_a_keyword_only_at_command_start(
+    shell: ShellHarness, script: str, expected: str
+) -> None:
+    """Check that an argument spelled case does not open a nested case statement"""
+    run = shell.run(script)
+
+    assert run.stdout == expected
+    assert run.exit_code == 0

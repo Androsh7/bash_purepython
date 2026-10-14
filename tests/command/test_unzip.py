@@ -96,3 +96,31 @@ def test_unzip_reports_a_missing_archive(shell: ShellHarness) -> None:
 
     assert run.exit_code == 9
     assert "missing.zip" in run.stderr
+
+
+def test_unzip_reports_an_encrypted_entry(shell: ShellHarness, tmp_path: Path) -> None:
+    """Check that an entry needing a password fails with a message rather than a crash"""
+    with zipfile.ZipFile(tmp_path / "locked.zip", "w") as zipped:
+        zipped.writestr("secret.txt", "x")
+        zipped.getinfo("secret.txt").flag_bits |= 0x1
+
+    run = shell.run("unzip locked.zip")
+
+    assert run.exit_code != 0
+    assert "secret.txt" in run.stderr
+    assert not (tmp_path / "secret.txt").exists()
+
+
+def test_unzip_reports_a_corrupt_entry(shell: ShellHarness, tmp_path: Path) -> None:
+    """Check that a member whose data fails its checksum is reported with a non-zero exit"""
+    with zipfile.ZipFile(tmp_path / "bad.zip", "w") as zipped:
+        zipped.writestr("a.txt", "alpha alpha alpha")
+    archive_bytes = bytearray((tmp_path / "bad.zip").read_bytes())
+    data_start = archive_bytes.index(b"alpha")
+    archive_bytes[data_start : data_start + 5] = b"omega"
+    (tmp_path / "bad.zip").write_bytes(bytes(archive_bytes))
+
+    run = shell.run("unzip bad.zip")
+
+    assert run.exit_code != 0
+    assert "a.txt" in run.stderr

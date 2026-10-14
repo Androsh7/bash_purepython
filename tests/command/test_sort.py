@@ -98,3 +98,20 @@ def test_sort_rejects_a_bad_key(shell: ShellHarness) -> None:
 
     assert run.exit_code == 2
     assert run.stderr != ""
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("printf 'b 2\\na 10\\nc 1\\n' | sort -k2,2nr", "a 10\nb 2\nc 1\n"),
+        ("printf 'b 2\\na 10\\nc 1\\n' | sort -k2nr", "a 10\nb 2\nc 1\n"),
+        ("printf 'x b\\ny a\\nz c\\n' | sort -k2r", "z c\nx b\ny a\n"),
+        ("printf '1 b\\n1 a\\n2 c\\n' | sort -k1,1nr -k2,2", "2 c\n1 a\n1 b\n"),
+    ],
+    ids=["numeric_reverse_bounded", "numeric_reverse_open", "text_reverse", "mixed_directions"],
+)
+def test_sort_key_reverse_modifier(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that the r modifier reverses one key without touching the others"""
+    run = shell.run(script)
+
+    assert run.stdout == expected

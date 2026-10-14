@@ -11,6 +11,7 @@ from bash_purepython.shell_state import EXIT_CODE_FAILURE, EXIT_CODE_SUCCESS, Sh
 
 ZIP_SUFFIX = ".zip"
 CANNOT_OPEN_EXIT_CODE = 9
+ENCRYPTED_FLAG_BIT = 0x1
 LENGTH_WIDTH = 9
 LISTING_HEADER = "  Length      Date    Time    Name\n---------  ---------- -----   ----\n"
 LISTING_FOOTER_RULE = "---------                     -------\n"
@@ -166,6 +167,13 @@ class UnzipCommand(Command):
             if destination.is_file() and not overwrite:
                 state.write_error(f"unzip: {member.filename} already exists, use -o to overwrite\n")
                 return None
-            archive.extract(member, target)
+            if member.flag_bits & ENCRYPTED_FLAG_BIT:
+                state.write_error(f"unzip: cannot extract {member.filename}: encrypted, password required\n")
+                return None
+            try:
+                archive.extract(member, target)
+            except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError) as error:
+                state.write_error(f"unzip: cannot extract {member.filename}: {error}\n")
+                return None
             lines.append(f"{extraction_verb(member)} {member.filename}\n")
         return "".join(lines)

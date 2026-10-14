@@ -281,3 +281,38 @@ def test_sed_help_goes_to_stdout(shell: ShellHarness) -> None:
 def test_translate_regex_rewrites_posix_dialects(pattern: str, extended: bool, expected: str) -> None:
     """Check the basic and extended regex translation to Python syntax"""
     assert translate_regex(pattern, extended) == expected
+
+
+def test_sed_in_place_keeps_carriage_returns(shell: ShellHarness, tmp_path: Path) -> None:
+    """Check that editing a CRLF file in place leaves the line endings in the file and the backup"""
+    (tmp_path / "crlf.txt").write_bytes(b"q\r\nr\r\n")
+
+    run = shell.run("sed -i.bak 's/q/Q/' crlf.txt")
+
+    assert run.exit_code == 0
+    assert (tmp_path / "crlf.txt").read_bytes() == b"Q\r\nr\r\n"
+    assert (tmp_path / "crlf.txt.bak").read_bytes() == b"q\r\nr\r\n"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("printf 'a' | sed -e '$a\\'", "a\n"),
+        ("printf 'a\\n' | sed -e '$a\\'", "a\n"),
+        ("printf 'a\\n' | sed -e 'a\\' -e 'text'", "a\ntext\n"),
+        ("printf 'a\\n' | sed -e '1i\\' -e 'first'", "first\na\n"),
+        ("printf 'a' | sed '$a foo'", "a\nfoo\n"),
+    ],
+    ids=[
+        "ensure_newline",
+        "newline_already_present",
+        "text_in_next_expression",
+        "insert_in_next_expression",
+        "append_after_missing_newline",
+    ],
+)
+def test_sed_append_text_may_continue_into_the_next_expression(shell: ShellHarness, script: str, expected: str) -> None:
+    """Check that a, i and c text carries over from one -e to the next, and $a\\ adds a missing newline"""
+    run = shell.run(script)
+
+    assert run.stdout == expected

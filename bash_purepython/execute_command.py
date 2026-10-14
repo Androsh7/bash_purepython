@@ -1204,7 +1204,9 @@ class Executor:
         value = await expand_word_unsplit(assignment.value, state, run_substitution)
         if assignment.index_text is not None:
             elements = array_elements(name, state)
-            index = await resolve_array_index(assignment.index_text, len(elements), state, run_substitution)
+            index = await resolve_array_index(
+                assignment.index_text, max(elements, default=-1) + 1, state, run_substitution
+            )
             if assignment.append:
                 value = elements.get(index, "") + value
             elements[index] = value
@@ -1819,7 +1821,7 @@ class Executor:
             if element_match is not None:
                 elements = state.arrays.get(element_match.group(1), {})
                 index = await resolve_array_index(
-                    element_match.group(2), len(elements), state, self.substitution_runner(state)
+                    element_match.group(2), max(elements, default=-1) + 1, state, self.substitution_runner(state)
                 )
                 elements.pop(index, None)
                 continue
